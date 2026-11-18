@@ -1,0 +1,15 @@
+name: PR verification section
+
+# The `body` gate: the PR description carries `## Verification` with evidence.
+# A repository-level caller (not an org ruleset) so that `edited` re-runs it.
+# See tensor4all/.github/.github/README.md.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+  merge_group:
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  body:
+    uses: tensor4all/.github/.github/workflows/pr-verification.yml@main

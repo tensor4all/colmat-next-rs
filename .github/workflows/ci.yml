@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # One total wall-clock budget for the whole pipeline (CONTRIBUTING.md, "CI time budget").
+  # Do not raise it, or add a per-job timeout, to make a slow addition fit: move the slow
+  # test to heavy-tests.yml instead.
+  CI_BUDGET_MINUTES: 15
+
+jobs:
+  # The repository has no crate yet. The Rust gates run from the first `Cargo.toml` on;
+  # until then they are skipped, and this job says so.
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.detect.outputs.present }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: detect
+        run: |
+          if [ -f Cargo.toml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Cargo.toml yet: the Rust gates (fmt, clippy, test, msrv, docs, deny) are skipped."
+          fi
+
+  fmt:
+    name: fmt
+    needs: rust
+    if: ${{ needs.rust.outputs.present == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    needs: rust
+    if: ${{ needs.rust.outputs.present == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    needs: rust
+    if: ${{ needs.rust.outputs.present == 'true' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --profile ci
+
+  msrv:
+    name: msrv
+    needs: rust
+    if: ${{ needs.rust.outputs.present == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Keep in sync with `rust-version` in Cargo.toml (set it when the first crate lands).
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets
+
+  docs:
+    name: docs
+    needs: rust
+    if: ${{ needs.rust.outputs.present == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+
+  deny:
+    name: deny (bans)
+    needs: rust
+    if: ${{ needs.rust.outputs.present == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans
+
+  budget:
+    name: budget
+    needs: [rust, fmt, clippy, test, msrv, docs, deny]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Whole pipeline within CI_BUDGET_MINUTES
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run="repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          started=$(gh api "$run" --jq .run_started_at)
+          elapsed=$(( $(date +%s) - $(date -d "$started" +%s) ))
+          echo "Slowest jobs (seconds):"
+          gh api "$run/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" --jq \
+            '.jobs[] | select(.completed_at != null)
+             | "\((.completed_at | fromdate) - (.started_at | fromdate))\t\(.name)"' \
+            | sort -rn | head -5
+          limit=$(( CI_BUDGET_MINUTES * 60 ))
+          echo "Pipeline: ${elapsed}s of ${limit}s"
+          if [ "$elapsed" -gt "$limit" ]; then
+            echo "::error::CI pipeline took ${elapsed}s, over the ${limit}s budget. Move the slowest tests to heavy-tests.yml."
+            exit 1
+          fi

@@ -1,0 +1,15 @@
+# Only `threadteam` starts tasks on a thread pool. Every crate of this workspace
+# reaches parallelism through the `Par` token it is given, so a direct `rayon`
+# dependency (normal, dev or build) is rejected. Third-party crates that bring
+# rayon in themselves are added to `wrappers` with a one-line reason.
+# CI runs this from the first crate on (there is nothing to check before).
+[graph]
+all-features = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+deny = [
+    { crate = "rayon", wrappers = ["threadteam"] },
+    { crate = "rayon-core", wrappers = ["rayon"] },
+]
