@@ -61,7 +61,7 @@ cargo deny check bans
   commit or per correction: every push to an open pull request reruns CI.
 - Use a git worktree under `.worktrees/` (ignored) for parallel work in one checkout.
 - `main` is protected: no direct pushes, no force pushes. The required checks are `ci-gate` (all
-  Rust gates and the CI budget, `.github/workflows/ci.yml`) and `body` (the PR description's
+  Rust gates and the CI budget, `.github/workflows/ci.yml`) and `body / body` (the PR description's
   `## Verification`, `.github/workflows/pr-verification.yml`). When you add or rename a CI job, add
   it to `ci-gate`'s `needs` in the same change, or it stops gating merges.
 - Create pull requests to `main` with `gh pr create`. A draft stays a draft until a maintainer
