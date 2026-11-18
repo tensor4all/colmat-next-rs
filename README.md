@@ -28,5 +28,6 @@ with status "design under review".
 
 ## License
 
-MIT; see [`LICENSE`](LICENSE). Code ported from colmat-rs or faer keeps its upstream notices; see
+MIT for now; see [`LICENSE`](LICENSE). This is a placeholder: the license choice belongs to the
+maintainers and has not been made. Code ported from colmat-rs or faer keeps its upstream notices; see
 [`REPOSITORY_RULES.md`](REPOSITORY_RULES.md).
