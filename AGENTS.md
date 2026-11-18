@@ -10,6 +10,15 @@ while referencing colmat-rs, faer, LAPACK, Eigen or any other third-party code.
 The contribution workflow (issues, the PR body, gates, review, versions) is in
 [`CONTRIBUTING.md`](CONTRIBUTING.md), which points to the unified policy in `tensor4all-meta`.
 
+## Proportionate safety and validation
+
+This is scientific-computing software, not a security product or trust boundary. Preserve Rust
+memory safety, aliasing soundness, numerical correctness and reproducibility. Do not add security
+machinery against a malicious maintainer, checkout, local build tool or CI runner unless a task
+introduces that untrusted boundary. Every added validation step names the correctness failure or
+operational mistake it prevents. This does not relax the checks required before unsafe memory
+access or mutable aliasing.
+
 ## Project overview
 
 **Status: trial.** This repository is a trial of building the next-generation colmat design as a
@@ -42,3 +51,21 @@ cargo test --workspace --profile ci
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 cargo deny check bans
 ```
+
+## Branches and pull requests
+
+- Branch from the latest `main`: `git fetch origin && git checkout -b <branch> origin/main`. Never
+  branch from stale local state or another feature branch unless that is intended.
+- Work expected to produce several commits accumulates on one working branch and reaches `main` in
+  one pull request once the batch is complete and verified locally. Do not open a pull request per
+  commit or per correction: every push to an open pull request reruns CI.
+- Use a git worktree under `.worktrees/` (ignored) for parallel work in one checkout.
+- `main` is protected: no direct pushes, no force pushes. The required checks are `ci-gate` (all
+  Rust gates and the CI budget, `.github/workflows/ci.yml`) and `body` (the PR description's
+  `## Verification`, `.github/workflows/pr-verification.yml`). When you add or rename a CI job, add
+  it to `ci-gate`'s `needs` in the same change, or it stops gating merges.
+- Create pull requests to `main` with `gh pr create`. A draft stays a draft until a maintainer
+  says otherwise. A ready pull request enables auto-merge:
+  `gh pr merge --auto --squash --delete-branch`.
+- No AI-generated analysis reports as standalone files in pull requests; link a work log under
+  `docs/worklogs/` instead when one is needed.

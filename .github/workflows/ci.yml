@@ -141,3 +141,24 @@ jobs:
             echo "::error::CI pipeline took ${elapsed}s, over the ${limit}s budget. Move the slowest tests to heavy-tests.yml."
             exit 1
           fi
+
+  # The single required status check for `main` (branch protection). Matrix job names change
+  # between "skipped" and "ran" (`test (${{ matrix.os }})` vs `test (ubuntu-latest)`), so branch
+  # protection names this job instead of the individual gates. Skipped gates count as passed.
+  ci-gate:
+    name: ci-gate
+    needs: [rust, fmt, clippy, test, msrv, docs, deny, budget]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every gate passed or was skipped
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.value.result)\t\(.key)"'
+          bad=$(echo "$RESULTS" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")')
+          if [ -n "$bad" ]; then
+            echo "::error::Failed or cancelled: $bad"
+            exit 1
+          fi

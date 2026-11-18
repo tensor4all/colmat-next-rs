@@ -1,0 +1,2 @@
+# Workflows control CI permissions and the required `ci-gate` check.
+.github/workflows/ @shinaoka @sakuraba07
