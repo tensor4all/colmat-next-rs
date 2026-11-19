@@ -1,0 +1,68 @@
+name: Heavy tests
+
+# Scheduled home for work too expensive for the push/PR pipeline (CONTRIBUTING.md,
+# "CI time budget"): tests named `heavy_*` and marked `#[ignore = "heavy: ..."]`,
+# and every example and bench target. This workflow carries its own bound below.
+
+on:
+  schedule:
+    # 18:00 UTC = 03:00 JST.
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: heavy-tests
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  heavy:
+    name: Heavy tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Until the first crate lands there is no workspace; the run is a no-op, not a failure.
+      - name: Build every target
+        if: ${{ hashFiles('Cargo.toml') != '' }}
+        run: cargo build --profile ci --workspace --all-targets
+      - name: Run heavy tests
+        if: ${{ hashFiles('Cargo.toml') != '' }}
+        run: cargo test --workspace --profile ci -- --ignored heavy_
+
+  # A separate job, because a run that dies on the timeout never reaches a later step.
+  # One rolling issue, found by its title: later failing runs comment on it instead of filing a
+  # new one. No label is used, because the repository has none yet (PR #3, point 5).
+  report:
+    name: Report a failing night
+    needs: heavy
+    if: ${{ always() && (needs.heavy.result == 'failure' || needs.heavy.result == 'cancelled') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: File or update the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: Scheduled heavy tests are failing
+        run: |
+          set -euo pipefail
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          printf -v body '%s\n\n%s\n\n%s\n' \
+            "Automated post from the \`heavy-tests\` workflow (no model involved). The scheduled heavy suite failed in [run ${GITHUB_RUN_ID}](${run_url}) on \`${GITHUB_SHA:0:8}\`." \
+            "Reproduce locally: \`cargo test --workspace --profile ci -- --ignored heavy_\`" \
+            "Heavy tests run outside the push/PR pipeline on purpose. Treat this as a real regression, or as a change that pushed a test past this workflow's bound."
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$TITLE\"" --limit 20 --json number,title \
+            --jq 'map(select(.title == env.TITLE)) | .[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$body"
+          fi

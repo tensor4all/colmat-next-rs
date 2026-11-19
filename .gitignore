@@ -1,3 +1,5 @@
+/target
+.worktrees/
 
 # Root-level markdown policy: keep only canonical project files here.
 # Design notes, worklogs and implementation plans belong under docs/.
