@@ -181,7 +181,14 @@ fn max_min_ties_and_nan() {
 	use crate::ext::RealFieldExt;
 	assert_eq!(3.0f64.fmax(4.0), 4.0);
 	assert_eq!(3.0f64.fmin(4.0), 3.0);
-	assert_eq!(3.0f64.hypot(4.0), 5.0);
+}
+
+// Exact `sqrt` result, which Miri's floating point deliberately perturbs.
+#[cfg_attr(miri, ignore)]
+#[test]
+fn hypot_through_ext() {
+	use crate::ext::RealFieldExt;
+	assert_eq!(RealFieldExt::hypot(&3.0f64, 4.0), 5.0);
 }
 
 #[test]
