@@ -17,3 +17,9 @@ durable design intent updates the relevant record in the same pull request
 A note in this directory records what this trial adopts for its code. It cites where each
 decision was made (an issue comment, the design document); a choice made only here is marked as
 proposed.
+
+## Records
+
+- [`trial-architecture.md`](trial-architecture.md): how this trial applies #2 and the design
+  document, the proposed crate layout and boundaries, what is ported from colmat-rs, and the first
+  slice (proposed).
