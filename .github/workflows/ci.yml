@@ -122,6 +122,22 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check bans
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+      # `deny.toml` lets `threadteam` (and the rayon it wraps) into the workspace; the crates below
+      # the execution layer must not have either at all (design record §2, principle 3; #12).
+      - name: No thread pool below colmat-core's execution layer
+        run: |
+          set -euo pipefail
+          for crate in colmat-traits colmat-core; do
+            found=$(cargo tree -p "$crate" --all-features -e normal,build,dev --prefix none \
+              | awk '{print $1}' | grep -xE 'rayon|rayon-core|threadteam' | sort -u || true)
+            if [ -n "$found" ]; then
+              echo "::error::$crate depends on: $found"
+              exit 1
+            fi
+          done
 
   budget:
     name: budget

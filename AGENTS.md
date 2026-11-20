@@ -33,7 +33,7 @@ the decisions taken so far.
 When you write in this repository, do not present a choice made here as a decision of the colmat
 maintainers. Say "proposed" or "in this trial", and cite the source of anything stated as decided.
 
-Crates live under `crates/` (the first is `colmat-traits`, #6). Do not start an implementation unless
+Crates live under `crates/` (`colmat-traits`, #6; `colmat-core`, #12). Do not start an implementation unless
 an issue asks for it. Statements in #2 about colmat-rs describe colmat-rs at the commit they cite,
 not this repository.
 

@@ -1,9 +1,13 @@
 name: Mutants
 
-# Mutation testing of `colmat-traits` (#8): finds tests that execute code without checking it.
-# Weekly and on demand; not a merge gate and not part of `ci-gate`. A mutant that survives
-# fails this run: add a test that kills it, or exclude it in `.cargo/mutants.toml` with the
-# reason. The list of results is uploaded as an artifact.
+# Mutation testing (#8, #12): finds tests that execute code without checking it.
+# Weekly and on demand; not a merge gate and not part of `ci-gate`.
+# - `colmat-traits`: a mutant that survives fails this run: add a test that kills it, or exclude
+#   it in `.cargo/mutants.toml` with the reason.
+# - `colmat-core`: reported, not yet required to be clean (#12): the job does not fail on
+#   surviving mutants while the view tests are being strengthened. It is sharded so that each
+#   shard fits the job timeout.
+# The lists of results are uploaded as artifacts.
 
 on:
   schedule:
@@ -44,4 +48,35 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mutants.out
+          path: mutants.out
+
+  mutants-core:
+    name: cargo-mutants (colmat-core, shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants@27.1.0
+      - name: Mutants (reported, not gating)
+        env:
+          PROPTEST_RNG_SEED: "20261120"
+          PROPTEST_CASES: "1024"
+        run: |
+          cargo mutants -p colmat-core --profile ci --jobs 2 --shard ${{ matrix.shard }}/4 \
+            || echo "::warning::colmat-core: surviving or timed-out mutants (see the artifact)"
+      - name: Upload results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-core-${{ matrix.shard }}.out
           path: mutants.out

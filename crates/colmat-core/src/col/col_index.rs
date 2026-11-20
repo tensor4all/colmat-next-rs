@@ -1,0 +1,123 @@
+use super::*;
+use crate::into_range::IntoRange;
+use crate::{Idx, IdxInc, assert, debug_assert};
+impl<'a, R: Shape, T, Rs: Stride, RowRange: IntoRange<IdxInc<R>, Len<R>: 'a>>
+	ColIndex<RowRange> for ColRef<'a, T, R, Rs>
+{
+	type Target = ColRef<'a, T, RowRange::Len<R>, Rs>;
+
+	#[track_caller]
+	#[inline]
+	fn get(this: Self, row: RowRange) -> Self::Target {
+		let row = row.into_range(R::start(), this.nrows().end());
+		assert!(all(row.start <= row.end, row.end <= this.nrows()));
+		// SAFETY: `RowRange::Len<R>` is `usize` (any value is valid) for every
+		// range type except `RangeFull`, whose `Len<R>` is `R` itself; then
+		// the range is `R::start()..this.nrows().end()`, so the length equals
+		// `this.nrows()` and a branded `R` keeps its brand invariant.
+		let nrows = unsafe {
+			RowRange::Len::<R>::new_unbound(
+				row.end.unbound() - row.start.unbound(),
+			)
+		};
+		this.subrows(row.start, nrows)
+	}
+
+	#[track_caller]
+	#[inline]
+	unsafe fn get_unchecked(this: Self, row: RowRange) -> Self::Target {
+		let row = row.into_range(R::start(), this.nrows().end());
+		debug_assert!(all(row.start <= row.end, row.end <= this.nrows(),));
+		// SAFETY: `RowRange::Len<R>` is `usize` (any value is valid) for every
+		// range type except `RangeFull`, whose `Len<R>` is `R` itself; then
+		// the range is `R::start()..this.nrows().end()`, so the length equals
+		// `this.nrows()` and a branded `R` keeps its brand invariant.
+		let nrows = unsafe {
+			RowRange::Len::<R>::new_unbound(
+				row.end.unbound() - row.start.unbound(),
+			)
+		};
+		this.subrows(row.start, nrows)
+	}
+}
+impl<'a, R: Shape, T, Rs: Stride, RowRange: IntoRange<IdxInc<R>, Len<R>: 'a>>
+	ColIndex<RowRange> for ColMut<'a, T, R, Rs>
+{
+	type Target = ColMut<'a, T, RowRange::Len<R>, Rs>;
+
+	#[track_caller]
+	#[inline]
+	fn get(this: Self, row: RowRange) -> Self::Target {
+		let row = row.into_range(R::start(), this.nrows().end());
+		assert!(all(row.start <= row.end, row.end <= this.nrows()));
+		// SAFETY: `RowRange::Len<R>` is `usize` (any value is valid) for every
+		// range type except `RangeFull`, whose `Len<R>` is `R` itself; then
+		// the range is `R::start()..this.nrows().end()`, so the length equals
+		// `this.nrows()` and a branded `R` keeps its brand invariant.
+		let nrows = unsafe {
+			RowRange::Len::<R>::new_unbound(
+				row.end.unbound() - row.start.unbound(),
+			)
+		};
+		this.subrows_mut(row.start, nrows)
+	}
+
+	#[track_caller]
+	#[inline]
+	unsafe fn get_unchecked(this: Self, row: RowRange) -> Self::Target {
+		let row = row.into_range(R::start(), this.nrows().end());
+		debug_assert!(all(row.start <= row.end, row.end <= this.nrows(),));
+		// SAFETY: `RowRange::Len<R>` is `usize` (any value is valid) for every
+		// range type except `RangeFull`, whose `Len<R>` is `R` itself; then
+		// the range is `R::start()..this.nrows().end()`, so the length equals
+		// `this.nrows()` and a branded `R` keeps its brand invariant.
+		let nrows = unsafe {
+			RowRange::Len::<R>::new_unbound(
+				row.end.unbound() - row.start.unbound(),
+			)
+		};
+		this.subrows_mut(row.start, nrows)
+	}
+}
+macro_rules! idx_impl {
+	($R:ty $(, $tt:tt)?) => {
+		impl<'a $(, $tt)?, T, Rs: Stride> ColIndex<Idx<$R>> for ColRef<'a, T, $R, Rs> {
+			type Target = &'a T;
+
+			#[track_caller]
+			#[inline]
+			fn get(this: Self, row: Idx<$R>) -> Self::Target {
+				this.at(row)
+			}
+
+			#[track_caller]
+			#[inline]
+			unsafe fn get_unchecked(this: Self, row: Idx<$R>) -> Self::Target {
+				// SAFETY: the caller guarantees that `row` is in bounds
+				// (`ColIndex::get_unchecked`'s contract), which is
+				// `at_unchecked`'s contract.
+				unsafe { this.at_unchecked(row) }
+			}
+		}
+		impl<'a $(, $tt)?, T, Rs: Stride> ColIndex<Idx<$R>> for ColMut<'a, T, $R, Rs> {
+			type Target = &'a mut T;
+
+			#[track_caller]
+			#[inline]
+			fn get(this: Self, row: Idx<$R>) -> Self::Target {
+				this.at_mut(row)
+			}
+
+			#[track_caller]
+			#[inline]
+			unsafe fn get_unchecked(this: Self, row: Idx<$R>) -> Self::Target {
+				// SAFETY: the caller guarantees that `row` is in bounds
+				// (`ColIndex::get_unchecked`'s contract), which is
+				// `at_mut_unchecked`'s contract.
+				unsafe { this.at_mut_unchecked(row) }
+			}
+		}
+	};
+}
+idx_impl!(usize);
+idx_impl!(Dim <'N >, 'N);

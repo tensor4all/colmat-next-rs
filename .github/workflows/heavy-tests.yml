@@ -42,10 +42,11 @@ jobs:
           PROPTEST_CASES: "65536"
         run: cargo test --workspace --profile ci prop_
 
-  # Undefined behaviour in the unsafe data-movement code of `colmat-traits` (masked and pair
-  # loads and stores, slice reinterpretation). Nightly-only, and slower than the PR budget allows.
+  # Undefined behaviour in the unsafe code: the data movement of `colmat-traits` (masked and pair
+  # loads and stores, slice reinterpretation) and the views of `colmat-core` (raw-pointer views,
+  # splits, owned-matrix allocation, `zip!`). Nightly-only, and slower than the PR budget allows.
   miri:
-    name: Miri (colmat-traits)
+    name: Miri (colmat-traits, colmat-core)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -57,7 +58,12 @@ jobs:
         if: ${{ hashFiles('Cargo.toml') != '' }}
         env:
           RUSTUP_TOOLCHAIN: nightly
-        run: cargo miri test -p colmat-traits --lib
+          # proptest reads the working directory (failure persistence) and its default ChaCha RNG
+          # uses SIMD intrinsics Miri does not implement on every target; XorShift is plain Rust.
+          MIRIFLAGS: -Zmiri-disable-isolation
+          PROPTEST_RNG_ALGORITHM: xs
+          PROPTEST_CASES: "16"
+        run: cargo miri test -p colmat-traits -p colmat-core --lib
 
   # A separate job, because a run that dies on the timeout never reaches a later step.
   # One rolling issue, found by its title: later failing runs comment on it instead of filing a
@@ -83,7 +89,7 @@ jobs:
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           printf -v body '%s\n\n%s\n\n%s\n' \
             "Automated post from the \`heavy-tests\` workflow (no model involved). The scheduled heavy suite failed in [run ${GITHUB_RUN_ID}](${run_url}) on \`${GITHUB_SHA:0:8}\`." \
-            "Reproduce locally: \`cargo test --workspace --profile ci -- --ignored heavy_\` and \`cargo +nightly miri test -p colmat-traits --lib\`" \
+            "Reproduce locally: \`cargo test --workspace --profile ci -- --ignored heavy_\` and \`cargo +nightly miri test -p colmat-traits -p colmat-core --lib\`" \
             "Heavy tests run outside the push/PR pipeline on purpose. Treat this as a real regression, or as a change that pushed a test past this workflow's bound."
           number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
             --search "in:title \"$TITLE\"" --limit 20 --json number,title \

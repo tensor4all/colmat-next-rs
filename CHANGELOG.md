@@ -15,6 +15,15 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `colmat-core` (#12): matrix views (`Mat`, `MatRef`, `MatMut`, `Col`, `Row`, `Diag`, `Perm`), `zip!`
+  iteration and serial layout copies, ported from colmat-rs without rayon and without the `linalg`
+  dependency. Every unsafe block carries a `// SAFETY:` comment; property tests check the views
+  against a reference offset model. The review found soundness defects inherited from colmat-rs
+  (panic safety of `Mat` growth and truncation, `Perm` with shape `One`, a triangular `zip!` arm,
+  `ZipEq::new_unchecked`, two `Array` methods); they are recorded in
+  `docs/worklogs/2026-11-20-colmat-core-views-port.md` and not yet fixed.
+- `NOTICE`: the provenance and licence of the code ported from colmat-rs and faer.
+
 - Repository scaffolding: agent and contribution rules, CI, and the design-record layout.
 - `colmat-traits` (#6): `ComplexField`/`RealField` with scalar arithmetic only, `Precision`
   (`eps`, `safe_min`, `safe_max`), and SIMD providers split from the scalar trait (`SimdLayout`,
