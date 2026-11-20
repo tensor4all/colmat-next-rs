@@ -1,0 +1,26 @@
+[package]
+name = "colmat-traits"
+version = "0.0.0"
+description = "Scalar contract (arithmetic, precision) and optional SIMD providers for colmat-next (trial)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytemuck.workspace = true
+libm.workspace = true
+num-complex.workspace = true
+pulp.workspace = true
+paste.workspace = true
+num-traits.workspace = true
+
+[features]
+default = ["std", "x86-v3"]
+std = ["pulp/std", "num-complex/std", "num-traits/std", "libm/arch"]
+# AVX2/FMA kernels in `pulp::Arch` on x86-64 (runtime-detected).
+x86-v3 = ["pulp/x86-v3"]
+
+[lints]
+workspace = true

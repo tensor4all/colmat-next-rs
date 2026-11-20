@@ -33,16 +33,18 @@ the decisions taken so far.
 When you write in this repository, do not present a choice made here as a decision of the colmat
 maintainers. Say "proposed" or "in this trial", and cite the source of anything stated as decided.
 
-There is no code yet. Do not start an implementation unless an issue asks for it. Statements in
-#2 about colmat-rs describe colmat-rs at the commit they cite, not this repository.
+Crates live under `crates/` (the first is `colmat-traits`, #6). Do not start an implementation unless
+an issue asks for it. Statements in #2 about colmat-rs describe colmat-rs at the commit they cite,
+not this repository.
 
 Working rules of this trial: [`REPOSITORY_RULES.md`](REPOSITORY_RULES.md). Design notes:
 [`docs/design/`](docs/design/README.md).
 
 ## Checks
 
-CI (`.github/workflows/ci.yml`) skips the Rust jobs while there is no `Cargo.toml`, and runs them
-from the first crate on. Once a crate exists, the pre-push checklist is:
+CI (`.github/workflows/ci.yml`) runs the Rust gates on the toolchain pinned in `rust-toolchain.toml`
+(a `RUSTUP_TOOLCHAIN` set in your shell overrides that file; unset it or set it to the pinned
+version). The pre-push checklist is:
 
 ```bash
 cargo fmt --all -- --check

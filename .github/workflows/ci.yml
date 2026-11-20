@@ -20,8 +20,7 @@ env:
   CI_BUDGET_MINUTES: 15
 
 jobs:
-  # The repository has no crate yet. The Rust gates run from the first `Cargo.toml` on;
-  # until then they are skipped, and this job says so.
+  # Detects the workspace. Without a `Cargo.toml` the Rust gates are skipped, and this job says so.
   rust:
     name: rust
     runs-on: ubuntu-latest
@@ -45,8 +44,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Keep in sync with `rust-toolchain.toml`, which selects this toolchain for cargo.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.96.0
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -57,8 +58,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.96.0
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -74,7 +76,9 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --profile ci
 
@@ -85,12 +89,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Keep in sync with `rust-version` in Cargo.toml (set it when the first crate lands).
+      # Keep in sync with `rust-version` in Cargo.toml. `RUSTUP_TOOLCHAIN` overrides
+      # `rust-toolchain.toml`, which would otherwise select the pinned lint toolchain.
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.89"
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets
+        env:
+          RUSTUP_TOOLCHAIN: "1.89"
 
   docs:
     name: docs
@@ -99,7 +106,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
       - uses: Swatinem/rust-cache@v2
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 

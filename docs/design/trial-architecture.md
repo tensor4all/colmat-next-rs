@@ -82,10 +82,14 @@ colmat   colmat-xprec    factorisations | Df64 scalar support and Df64 kernels
 These answer meta §11 questions only for the purpose of building the trial. Each stays proposed
 until recorded in meta.
 
-- **Scalar.** `ComplexField` keeps only S0. The `simd_*` surface moves to an optional `SimdField`,
-  split into data movement (derivable for `#[repr(C)]` tuples of `f64` words) and arithmetic
-  (written by the type), following meta §7a's classification. A type without `SimdField` runs P4–P8
-  as scalar loops.
+- **Scalar.** `ComplexField` keeps only S0. The `simd_*` surface moves to a provider that the
+  scalar names in `ComplexField::Simd`, split into data movement (`SimdLayout`) and arithmetic
+  (`SimdField`), following meta §7a's classification; real providers also load and store pairs
+  (`SimdPairs`), from which the complex provider is derived. A scalar-only type names `NoSimd`, a
+  one-lane provider built on S0, so it runs P4–P8 as scalar loops. An associated provider is used
+  because stable Rust cannot specialise on an optional trait; the type writes one line for it.
+  `RealField` keeps colmat-rs's `num_traits::{Num, NumAssign}` bounds, which `num_complex`'s
+  division needs. Implemented in `colmat-traits` (#6).
 - **Capabilities, not identity.** No dispatch on `IS_NATIVE_*`, `TypeId` or `size_of`. A fast path
   is reached through a kernel provider. Where a provider asserts layout equivalence with a native
   type (for reinterpretation), that assertion is an `unsafe trait`, so safe code cannot reach a
