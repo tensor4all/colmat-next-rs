@@ -52,12 +52,12 @@ The fix changes numerical results and is left to its own change.
    about `1e-11`. The usual remedy computes the small part as `im / (2 t)` from the large one
    `t = sqrt((|z| + |re|) / 2)`. (Ignored: `prop_sqrt_squares_back`. Active:
    `prop_sqrt_large_component`, which checks `t` and the signs.)
-2. **`recip` flushes to zero near the overflow threshold.** For `|z|` above about `0.5 · MAX`,
-   the big-value branch scales by `sqrt(safe_min)` only, the squared magnitude overflows, and the
-   result is `0` instead of a subnormal: `recip(f64::MAX)` gives `0` instead of `5.56e-309`, and
+2. **`recip` flushes to zero near the overflow threshold.** For `|z|` above about
+   `2^1023 = 0.5 · MAX` (`2^127` in `f32`), the big-value branch scales by `sqrt(safe_min)`
+   only, the squared magnitude overflows, and the result is `0` instead of a subnormal: `recip(f64::MAX)` gives `0` instead of `5.56e-309`, and
    `recip(0 + 3e38 i)` in `f32` gives `0` instead of `-3.3e-39 i`. `complex_abs` scales the same
    range by `sqrt(safe_min) · eps` and is not affected. (Ignored: `prop_recip_near_overflow`.
-   Active: `prop_recip_f64`/`prop_recip_f32` on parts up to `2^1022` / `2^126`.)
+   Active: `prop_recip_f64`/`prop_recip_f32` on parts below `2^1022` / `2^126`.)
 
 A third observation is a convention, not a defect: `sqrt(x - 0i)` returns `+0` as imaginary
 part, where C99 `csqrt` returns `-0`. It is left as colmat-rs has it and pinned by a test.

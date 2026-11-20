@@ -36,11 +36,11 @@ fn wide_f32(
 const F64_ALL: core::ops::RangeInclusive<i32> = -1074..=1023;
 /// Every exponent of `f32`.
 const F32_ALL: core::ops::RangeInclusive<i32> = -149..=127;
-/// Exponents below the regime of the known `recip` defect: a part of
-/// magnitude `2^e` with `e` at most these stays finite when squared after
-/// the `sqrt(safe_min)` scaling.
-const F64_RECIP_OK: core::ops::RangeInclusive<i32> = -1074..=1022;
-const F32_RECIP_OK: core::ops::RangeInclusive<i32> = -149..=126;
+/// Exponents below the regime of the known `recip` defect: with both parts
+/// below `2^(e + 1)`, the sum of their squares stays finite after the
+/// `sqrt(safe_min)` scaling.
+const F64_RECIP_OK: core::ops::RangeInclusive<i32> = -1074..=1021;
+const F32_RECIP_OK: core::ops::RangeInclusive<i32> = -149..=125;
 
 /// `1 / (re + i im)` in `f64`, scaled by the exponent of the larger part so
 /// that nothing overflows or underflows before the last multiplication.
@@ -123,14 +123,15 @@ proptest! {
 		check_recip_f32(re, im);
 	}
 
-	/// The regime of the known defect: a part of magnitude `2^1023` (`2^127`
-	/// for `f32`), where the result is subnormal and `recip` returns zero.
+	/// The regime of the known defect: a part of magnitude at least `2^1022`
+	/// (`2^126` for `f32`), where the result is subnormal and `recip` may
+	/// return zero.
 	#[ignore = "known defect: recip flushes to 0 when |z| is near the overflow threshold (big branch squares after scaling by sqrt(safe_min) only)"]
 	#[test]
 	fn prop_recip_near_overflow(
-		re in wide_f64(1023..=1023),
+		re in wide_f64(1022..=1023),
 		im in wide_f64(F64_ALL),
-		re32 in wide_f32(127..=127),
+		re32 in wide_f32(126..=127),
 		im32 in wide_f32(F32_ALL),
 	) {
 		check_recip_f64(re, im);
