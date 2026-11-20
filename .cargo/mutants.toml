@@ -5,10 +5,9 @@ exclude_re = [
   # to one, the neighbouring branch's power-of-two scaling gives a bit-identical result.
   "replace > with >= in complex_(abs|recip)",
   "replace < with <= in complex_(abs|recip)",
-  # `sum < 0` in complex_sqrt cannot hold (|z| >= |re| under correct rounding), and at sum = 0
-  # the clamp assigns the same +0. The pattern also covers `im < 0`, whose -0 case is pinned by
-  # the unit test `sqrt_of_negative_zero_imaginary` instead.
-  "replace < with (==|<=) in complex_sqrt",
+  # complex_sqrt: `re > 0` for an infinite `re` is the same as `re >= 0`; at `|z| == 1` halving
+  # before or after the sum gives the same result.
+  "replace > with >= in complex_sqrt",
   # An empty pair range is normalised to 0..0; left as s..s it is equally empty.
   "replace < with <= in split_pair_range",
   # NoSimd abs_max: when |re| == |im| either choice is the same value.

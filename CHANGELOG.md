@@ -7,6 +7,12 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `colmat-traits` (#10): complex `sqrt` no longer loses the smaller component when `|im| ≪ |re|`
+  (Kahan's method), and complex `recip` no longer flushes to zero for `|z|` near the overflow
+  threshold. Both defects were inherited from colmat-rs.
+
 ### Added
 
 - Repository scaffolding: agent and contribution rules, CI, and the design-record layout.
