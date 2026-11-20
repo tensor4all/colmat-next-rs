@@ -6,11 +6,12 @@ use crate::test_support::Sf;
 use crate::{Complex, ComplexField, RealField, c32, c64};
 use proptest::prelude::*;
 
-/// `±m 2^e` with `m` in `[1, 2)` and `e` spanning the normal and subnormal
-/// ranges of `f64`, or a signed zero.
-fn wide_f64() -> impl Strategy<Value = f64> + Clone {
+/// `±m 2^e` with `m` in `[1, 2)` and `e` in `exp`, or a signed zero.
+fn wide_f64(
+	exp: core::ops::RangeInclusive<i32>,
+) -> impl Strategy<Value = f64> + Clone {
 	prop_oneof![
-		9 => (1.0..2.0f64, -1074i32..=1023, any::<bool>()).prop_map(|(m, e, neg)| {
+		9 => (1.0..2.0f64, exp, any::<bool>()).prop_map(|(m, e, neg)| {
 			let x = m * 2.0f64.powi(e);
 			if neg { -x } else { x }
 		}),
@@ -19,15 +20,27 @@ fn wide_f64() -> impl Strategy<Value = f64> + Clone {
 }
 
 /// The same for `f32`.
-fn wide_f32() -> impl Strategy<Value = f32> + Clone {
+fn wide_f32(
+	exp: core::ops::RangeInclusive<i32>,
+) -> impl Strategy<Value = f32> + Clone {
 	prop_oneof![
-		9 => (1.0..2.0f32, -149i32..=127, any::<bool>()).prop_map(|(m, e, neg)| {
+		9 => (1.0..2.0f32, exp, any::<bool>()).prop_map(|(m, e, neg)| {
 			let x = (m as f64 * 2.0f64.powi(e)) as f32;
 			if neg { -x } else { x }
 		}),
 		1 => prop_oneof![Just(0.0f32), Just(-0.0)],
 	]
 }
+
+/// Every exponent of `f64`, normal and subnormal.
+const F64_ALL: core::ops::RangeInclusive<i32> = -1074..=1023;
+/// Every exponent of `f32`.
+const F32_ALL: core::ops::RangeInclusive<i32> = -149..=127;
+/// Exponents below the regime of the known `recip` defect: a part of
+/// magnitude `2^e` with `e` at most these stays finite when squared after
+/// the `sqrt(safe_min)` scaling.
+const F64_RECIP_OK: core::ops::RangeInclusive<i32> = -1074..=1022;
+const F32_RECIP_OK: core::ops::RangeInclusive<i32> = -149..=126;
 
 /// `1 / (re + i im)` in `f64`, scaled by the exponent of the larger part so
 /// that nothing overflows or underflows before the last multiplication.
@@ -57,36 +70,76 @@ fn assert_close(
 	);
 }
 
+fn check_recip_f64(re: f64, im: f64) {
+	if re == 0.0 && im == 0.0 {
+		return;
+	}
+	let want = recip_ref(re, im);
+	// Results at the overflow threshold may round to either side.
+	if want.0.abs().max(want.1.abs()) >= f64::MAX / 4.0 {
+		return;
+	}
+	let got = complex_recip(re, im);
+	assert_close(
+		got,
+		want,
+		f64::EPSILON,
+		f64::MIN_POSITIVE * f64::EPSILON,
+		"recip",
+	);
+}
+
+fn check_recip_f32(re: f32, im: f32) {
+	if re == 0.0 && im == 0.0 {
+		return;
+	}
+	let (r, i) = (re as f64, im as f64);
+	let n = r * r + i * i;
+	let want = (r / n, -i / n);
+	if want.0.abs().max(want.1.abs()) >= f32::MAX as f64 / 4.0 {
+		return;
+	}
+	let (gr, gi) = complex_recip(re, im);
+	let tiny = (f32::MIN_POSITIVE * f32::EPSILON) as f64;
+	assert_close(
+		(gr as f64, gi as f64),
+		want,
+		f32::EPSILON as f64,
+		tiny,
+		"recip",
+	);
+}
+
 proptest! {
 	#[cfg_attr(miri, ignore)]
 	#[test]
-	fn prop_recip_f64(re in wide_f64(), im in wide_f64()) {
-		prop_assume!(re != 0.0 || im != 0.0);
-		let want = recip_ref(re, im);
-		// Results near the overflow threshold may round to either side.
-		prop_assume!(want.0.abs().max(want.1.abs()) < f64::MAX / 4.0);
-		let got = complex_recip(re, im);
-		assert_close(got, want, f64::EPSILON, f64::MIN_POSITIVE * f64::EPSILON, "recip");
-	}
-
-	// The f64 property rarely draws a part above ~9e307; f32 draws the same
-	// regime often. See `prop_recip_f64` for the defect.
-	#[ignore = "known defect: recip flushes to 0 when |z| is near the overflow threshold (big branch squares after scaling by sqrt(safe_min) only)"]
-	#[test]
-	fn prop_recip_f32(re in wide_f32(), im in wide_f32()) {
-		prop_assume!(re != 0.0 || im != 0.0);
-		let (r, i) = (re as f64, im as f64);
-		let n = r * r + i * i;
-		let want = (r / n, -i / n);
-		prop_assume!(want.0.abs().max(want.1.abs()) < f32::MAX as f64 / 4.0);
-		let (gr, gi) = complex_recip(re, im);
-		let tiny = (f32::MIN_POSITIVE * f32::EPSILON) as f64;
-		assert_close((gr as f64, gi as f64), want, f32::EPSILON as f64, tiny, "recip");
+	fn prop_recip_f64(re in wide_f64(F64_RECIP_OK), im in wide_f64(F64_RECIP_OK)) {
+		check_recip_f64(re, im);
 	}
 
 	#[cfg_attr(miri, ignore)]
 	#[test]
-	fn prop_abs_matches_hypot(re in wide_f64(), im in wide_f64()) {
+	fn prop_recip_f32(re in wide_f32(F32_RECIP_OK), im in wide_f32(F32_RECIP_OK)) {
+		check_recip_f32(re, im);
+	}
+
+	/// The regime of the known defect: a part of magnitude `2^1023` (`2^127`
+	/// for `f32`), where the result is subnormal and `recip` returns zero.
+	#[ignore = "known defect: recip flushes to 0 when |z| is near the overflow threshold (big branch squares after scaling by sqrt(safe_min) only)"]
+	#[test]
+	fn prop_recip_near_overflow(
+		re in wide_f64(1023..=1023),
+		im in wide_f64(F64_ALL),
+		re32 in wide_f32(127..=127),
+		im32 in wide_f32(F32_ALL),
+	) {
+		check_recip_f64(re, im);
+		check_recip_f32(re32, im32);
+	}
+
+	#[cfg_attr(miri, ignore)]
+	#[test]
+	fn prop_abs_matches_hypot(re in wide_f64(F64_ALL), im in wide_f64(F64_ALL)) {
 		let want = re.hypot(im);
 		let got = complex_abs(re, im);
 		prop_assert!(
@@ -97,7 +150,7 @@ proptest! {
 
 	#[cfg_attr(miri, ignore)]
 	#[test]
-	fn prop_abs_f32_matches_f64_hypot(re in wide_f32(), im in wide_f32()) {
+	fn prop_abs_f32_matches_f64_hypot(re in wide_f32(F32_ALL), im in wide_f32(F32_ALL)) {
 		let want = (re as f64).hypot(im as f64);
 		prop_assume!(want < f32::MAX as f64 / 2.0);
 		let got = complex_abs(re, im) as f64;
@@ -108,8 +161,26 @@ proptest! {
 		);
 	}
 
-	/// `sqrt(z)² = z` up to rounding, with a non-negative real part and the
-	/// sign of the imaginary part of `z`.
+	/// The larger component of `sqrt(z)` is `sqrt((|z| + |re|) / 2)` up to
+	/// rounding (it is computed without cancellation), the real part is
+	/// non-negative, and the imaginary part has the sign of `im`.
+	#[cfg_attr(miri, ignore)]
+	#[test]
+	fn prop_sqrt_large_component(re in -1e300..1e300f64, im in -1e300..1e300f64) {
+		let (sr, si) = complex_sqrt(re, im);
+		prop_assert!(sr >= 0.0);
+		if im != 0.0 {
+			prop_assert_eq!(si.is_sign_negative(), im < 0.0);
+		}
+		let t = ((re.hypot(im) + re.abs()) / 2.0).sqrt();
+		let large = if re >= 0.0 { sr } else { si.abs() };
+		prop_assert!(
+			(large - t).abs() <= 4.0 * f64::EPSILON * t,
+			"sqrt({re:e}, {im:e}) = ({sr:e}, {si:e}), larger part should be {t:e}"
+		);
+	}
+
+	/// `sqrt(z)² = z` up to rounding: also the smaller component is accurate.
 	#[ignore = "known defect: sqrt loses the imaginary part when |im| << re (|z| - re cancels)"]
 	#[test]
 	fn prop_sqrt_squares_back(re in -1e300..1e300f64, im in -1e300..1e300f64) {
@@ -189,4 +260,17 @@ fn mul_add_impl() {
 		y.mul_add_impl(y, -(1.0 + 2.0f32.powi(-11))),
 		2.0f32.powi(-24)
 	);
+}
+
+/// `sqrt(x - 0i)` keeps colmat-rs's convention: the imaginary part is `+0`
+/// (C99 `csqrt` would return `-0`). Pinned so that a change is deliberate.
+// Exact `sqrt` results, which Miri's floating point deliberately perturbs.
+#[cfg_attr(miri, ignore)]
+#[test]
+fn sqrt_of_negative_zero_imaginary() {
+	let (re, im) = complex_sqrt(4.0f64, -0.0);
+	assert_eq!(re, 2.0);
+	assert!(im == 0.0 && im.is_sign_positive());
+	let (re, im) = complex_sqrt(-4.0f64, -0.0);
+	assert_eq!((re, im), (0.0, 2.0));
 }

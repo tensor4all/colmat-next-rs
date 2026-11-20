@@ -32,7 +32,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants@27.1.0
+      # A fixed seed and more cases, so that the result does not depend on which random
+      # inputs a run happens to draw.
       - name: Mutants
+        env:
+          PROPTEST_RNG_SEED: "20261120"
+          PROPTEST_CASES: "4096"
         run: cargo mutants -p colmat-traits --profile ci --jobs 2
       - name: Upload results
         if: ${{ always() }}
