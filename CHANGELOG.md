@@ -9,4 +9,9 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
-- Repository scaffolding: agent and contribution rules, CI, and the design-record layout. No crate yet.
+- Repository scaffolding: agent and contribution rules, CI, and the design-record layout.
+- `colmat-traits` (#6): `ComplexField`/`RealField` with scalar arithmetic only, `Precision`
+  (`eps`, `safe_min`, `safe_max`), and SIMD providers split from the scalar trait (`SimdLayout`,
+  `SimdField`, `SimdPairs`; `NoSimd`, `NativeSimd`, `ComplexSimd`). Ported from colmat-rs `faer-traits`.
+- Workspace setup: MSRV 1.89, pinned toolchain 1.96.0, rustfmt and lint configuration, Miri in the
+  nightly heavy tests.

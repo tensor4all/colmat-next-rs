@@ -1,0 +1,8 @@
+# The stable subset of colmat-rs's `rustfmt.toml` (colmat-rs@71337cdc). Its nightly-only options
+# (`imports_granularity`, `wrap_comments`, `format_strings`, ...) are left out because the `fmt`
+# job runs stable rustfmt, which would ignore them.
+style_edition = "2024"
+hard_tabs = true
+max_width = 80
+use_field_init_shorthand = true
+match_block_trailing_comma = true

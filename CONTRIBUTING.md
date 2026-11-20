@@ -10,10 +10,9 @@ This file only records what is specific to `colmat-next-rs`:
 
 ## Local facts
 
-- **MSRV**: none yet; there is no crate. The first crate declares `rust-version` in the workspace `Cargo.toml` and
-  the `msrv` job in `.github/workflows/ci.yml` is set to the same toolchain in that change (colmat-rs declares
-  1.89.0; the job's 1.89 is an initial value). The same change adds `rust-toolchain.toml` and `rustfmt.toml`
-  following colmat-rs.
+- **MSRV**: 1.89 (`rust-version` in the workspace `Cargo.toml`, matching colmat-rs). The `msrv` job in
+  `.github/workflows/ci.yml` checks it with `RUSTUP_TOOLCHAIN`, because `rust-toolchain.toml` pins the lint
+  and test toolchain (1.96.0). `rustfmt.toml` is the stable subset of colmat-rs's settings.
 - **Feature combinations CI builds**: default features, and `--all-features` for clippy and rustdoc.
 - **Platforms claimed**: `ubuntu-latest` and `macos-latest` (tests); rustdoc, clippy and `deny` run on Linux only.
 - **Local gate**: `cargo test --workspace --profile ci` once a crate exists.
@@ -24,6 +23,5 @@ This file only records what is specific to `colmat-next-rs`:
 
 ## Anything here that departs from the shared rules
 
-Until the first crate lands, the Rust gates (`fmt`, `clippy`, `test`, `msrv`, `docs`) have nothing to check and CI
-skips them; the `rust` job reports whether a `Cargo.toml` is present. That is the state of an empty repository, not
-an exemption: the gates run from the first crate on.
+None. Miri runs nightly over `colmat-traits`'s lib tests (`heavy-tests.yml`), not in the push/PR pipeline, because it
+needs nightly and exceeds the CI budget.

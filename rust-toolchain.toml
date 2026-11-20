@@ -1,0 +1,6 @@
+# Pinned so a local run and CI lint with the same compiler (as colmat-rs does). The `msrv` job in
+# `.github/workflows/ci.yml` overrides this file with `RUSTUP_TOOLCHAIN`.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

@@ -1,0 +1,40 @@
+[workspace]
+members = ["crates/colmat-traits"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+# Keep in sync with the `msrv` job in `.github/workflows/ci.yml`.
+rust-version = "1.89"
+# Placeholder licence (README, "License"); crates that port faer code keep faer's MIT notice.
+license = "MIT"
+repository = "https://github.com/tensor4all/colmat-next-rs"
+publish = false
+
+[workspace.dependencies]
+bytemuck = { version = "1.24.0", default-features = false }
+libm = { version = "0.2.15", default-features = false }
+num-complex = { version = "0.4.6", default-features = false, features = ["bytemuck"] }
+pulp = { version = "0.22.2", default-features = false }
+paste = "1.0.15"
+num-traits = { version = "0.2.19", default-features = false }
+
+# Each lint names the failure it prevents (AGENTS.md, "Proportionate safety and validation").
+[workspace.lints.rust]
+# An `unsafe fn` body would otherwise hide which operations are unsafe.
+unsafe_op_in_unsafe_fn = "deny"
+# Public items without documentation (denied in CI through `-D warnings`).
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# An unsafe block without a `// SAFETY:` proof cannot be reviewed against its contract.
+undocumented_unsafe_blocks = "deny"
+# An `unsafe fn` or `unsafe trait` without a `# Safety` section has no contract to uphold.
+missing_safety_doc = "deny"
+
+# `cargo test --profile ci` (CONTRIBUTING.md, "Local gate"): optimised enough for the numerical
+# tests, with debug assertions and overflow checks kept on.
+[profile.ci]
+inherits = "test"
+opt-level = 2
+debug = "line-tables-only"

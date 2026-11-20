@@ -10,7 +10,10 @@ the colmat maintainers. Until then, the design references are
 [`docs/design/next-generation-dense-linear-algebra.md`](https://github.com/tensor4all/tensor4all-meta/blob/main/docs/design/next-generation-dense-linear-algebra.md),
 and nothing in this repository overrides them.
 
-There is no code yet, and no crate is published from this repository.
+No crate is published from this repository. The workspace has one crate so far:
+
+- [`colmat-traits`](crates/colmat-traits): the scalar contract (arithmetic and precision, S0) and
+  optional SIMD providers (S1), proposed in this trial for #2 (#6).
 
 ## Background
 
