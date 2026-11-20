@@ -271,3 +271,6 @@ impl Index for usize {
 	type FixedWidth = u64;
 	type Signed = isize;
 }
+
+#[cfg(test)]
+mod tests;

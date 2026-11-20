@@ -358,6 +358,9 @@ impl<T: RealField> ComplexField for Complex<T> {
 	}
 }
 
+#[cfg(test)]
+mod tests;
+
 /// `|re + i im|` with scaling by exact powers of two, so that intermediate
 /// squares neither overflow nor flush to zero.
 pub(crate) fn complex_abs<T: RealField>(re: T, im: T) -> T {

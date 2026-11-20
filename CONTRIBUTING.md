@@ -24,4 +24,6 @@ This file only records what is specific to `colmat-next-rs`:
 ## Anything here that departs from the shared rules
 
 None. Miri runs nightly over `colmat-traits`'s lib tests (`heavy-tests.yml`), not in the push/PR pipeline, because it
-needs nightly and exceeds the CI budget.
+needs nightly and exceeds the CI budget. The property tests (`prop_*`) run 256 cases per PR and 65 536 nightly
+(`PROPTEST_CASES`). Mutation testing (`cargo mutants -p colmat-traits --profile ci`) runs weekly and on demand
+(`mutants.yml`) and does not gate merges; a surviving mutant gets a test, or an exclusion with its reason.

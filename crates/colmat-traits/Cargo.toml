@@ -16,6 +16,9 @@ pulp.workspace = true
 paste.workspace = true
 num-traits.workspace = true
 
+[dev-dependencies]
+proptest.workspace = true
+
 [features]
 default = ["std", "x86-v3"]
 std = ["pulp/std", "num-complex/std", "num-traits/std", "libm/arch"]

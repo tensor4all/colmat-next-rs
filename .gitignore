@@ -13,3 +13,7 @@
 !/CLAUDE.md
 !/REPOSITORY_RULES.md
 !/SUPPORT.md
+
+# cargo-mutants output
+mutants.out/
+mutants.out.old/

@@ -35,6 +35,12 @@ jobs:
       - name: Run heavy tests
         if: ${{ hashFiles('Cargo.toml') != '' }}
         run: cargo test --workspace --profile ci -- --ignored heavy_
+      # The property tests (`prop_*`) run 256 cases in the PR pipeline; nightly runs many more.
+      - name: Property tests, many cases
+        if: ${{ hashFiles('Cargo.toml') != '' }}
+        env:
+          PROPTEST_CASES: "65536"
+        run: cargo test --workspace --profile ci prop_
 
   # Undefined behaviour in the unsafe data-movement code of `colmat-traits` (masked and pair
   # loads and stores, slice reinterpretation). Nightly-only, and slower than the PR budget allows.

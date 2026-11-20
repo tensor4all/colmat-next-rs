@@ -165,29 +165,55 @@ impl RealField for Sf {}
 /// Builds test values of any scalar from two `f64`s (the imaginary part is
 /// dropped for real types).
 pub trait TestValue: ComplexField {
+	/// The precision parameter of the real type, as `f64`.
+	const EPS: f64;
+	/// The spacing of subnormals: the absolute error floor of one rounding.
+	const TINY: f64;
 	fn make(re: f64, im: f64) -> Self;
+	/// Real and imaginary parts, as `f64` (exact for every test scalar).
+	fn parts(&self) -> (f64, f64);
 }
 impl TestValue for f64 {
+	const EPS: f64 = f64::EPSILON;
+	const TINY: f64 = f64::MIN_POSITIVE * f64::EPSILON;
 	fn make(re: f64, _: f64) -> Self {
 		re
 	}
+	fn parts(&self) -> (f64, f64) {
+		(*self, 0.0)
+	}
 }
 impl TestValue for f32 {
+	const EPS: f64 = f32::EPSILON as f64;
+	const TINY: f64 = (f32::MIN_POSITIVE * f32::EPSILON) as f64;
 	fn make(re: f64, _: f64) -> Self {
 		re as f32
 	}
+	fn parts(&self) -> (f64, f64) {
+		(*self as f64, 0.0)
+	}
 }
 impl TestValue for Sf {
+	const EPS: f64 = f64::EPSILON;
+	const TINY: f64 = f64::MIN_POSITIVE * f64::EPSILON;
 	fn make(re: f64, _: f64) -> Self {
 		Sf(re)
 	}
+	fn parts(&self) -> (f64, f64) {
+		(self.0, 0.0)
+	}
 }
 impl<T: TestValue + RealField> TestValue for Complex<T> {
+	const EPS: f64 = T::EPS;
+	const TINY: f64 = T::TINY;
 	fn make(re: f64, im: f64) -> Self {
 		Complex {
 			re: T::make(re, 0.0),
 			im: T::make(im, 0.0),
 		}
+	}
+	fn parts(&self) -> (f64, f64) {
+		(self.re.parts().0, self.im.parts().0)
 	}
 }
 

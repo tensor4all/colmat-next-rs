@@ -47,7 +47,10 @@ pub fn sqrt_safe_max<T: RealField>() -> T {
 /// [`crate::Precision`] implementation never declares.
 #[must_use]
 pub fn digits<T: RealField>() -> u32 {
-	let eps = T::eps();
+	digits_of(T::eps())
+}
+/// [`digits`] for a given `eps`.
+pub(crate) fn digits_of<T: RealField>(eps: T) -> u32 {
 	let one = one::<T>();
 	let positive = matches!(
 		eps.partial_cmp(&zero::<T>()),
