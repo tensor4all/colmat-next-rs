@@ -32,6 +32,8 @@ fn wide_f32(
 	]
 }
 
+/// The spacing of `f64` subnormals.
+const TINY64: f64 = f64::MIN_POSITIVE * f64::EPSILON;
 /// Every exponent of `f64`, normal and subnormal.
 const F64_ALL: core::ops::RangeInclusive<i32> = -1074..=1023;
 /// Every exponent of `f32`.
@@ -123,10 +125,9 @@ proptest! {
 		check_recip_f32(re, im);
 	}
 
-	/// The regime of the known defect: a part of magnitude at least `2^1022`
-	/// (`2^126` for `f32`), where the result is subnormal and `recip` may
-	/// return zero.
-	#[ignore = "known defect: recip flushes to 0 when |z| is near the overflow threshold (big branch squares after scaling by sqrt(safe_min) only)"]
+	/// Parts of magnitude at least `2^1022` (`2^126` for `f32`), where the
+	/// result is subnormal (#10: it used to flush to zero).
+	#[cfg_attr(miri, ignore)]
 	#[test]
 	fn prop_recip_near_overflow(
 		re in wide_f64(1022..=1023),
@@ -167,32 +168,39 @@ proptest! {
 	/// non-negative, and the imaginary part has the sign of `im`.
 	#[cfg_attr(miri, ignore)]
 	#[test]
-	fn prop_sqrt_large_component(re in -1e300..1e300f64, im in -1e300..1e300f64) {
+	fn prop_sqrt_large_component(re in wide_f64(F64_ALL), im in wide_f64(F64_ALL)) {
 		let (sr, si) = complex_sqrt(re, im);
 		prop_assert!(sr >= 0.0);
 		if im != 0.0 {
 			prop_assert_eq!(si.is_sign_negative(), im < 0.0);
 		}
-		let t = ((re.hypot(im) + re.abs()) / 2.0).sqrt();
+		// Halved before adding, so that the reference does not overflow.
+		let t = (re.hypot(im) / 2.0 + re.abs() / 2.0).sqrt();
 		let large = if re >= 0.0 { sr } else { si.abs() };
 		prop_assert!(
-			(large - t).abs() <= 4.0 * f64::EPSILON * t,
+			(large - t).abs() <= 4.0 * f64::EPSILON * t + 4.0 * TINY64.sqrt(),
 			"sqrt({re:e}, {im:e}) = ({sr:e}, {si:e}), larger part should be {t:e}"
 		);
 	}
 
-	/// `sqrt(z)² = z` up to rounding: also the smaller component is accurate.
-	#[ignore = "known defect: sqrt loses the imaginary part when |im| << re (|z| - re cancels)"]
+	/// `sqrt(z)² = z` up to rounding: also the smaller component is accurate
+	/// (#10: it used to cancel when `|im| ≪ |re|`).
+	#[cfg_attr(miri, ignore)]
 	#[test]
-	fn prop_sqrt_squares_back(re in -1e300..1e300f64, im in -1e300..1e300f64) {
+	fn prop_sqrt_squares_back(re in wide_f64(F64_ALL), im in wide_f64(F64_ALL)) {
 		let (sr, si) = complex_sqrt(re, im);
 		prop_assert!(sr >= 0.0);
 		if im != 0.0 {
 			prop_assert_eq!(si.is_sign_negative(), im < 0.0);
 		}
-		let back = (sr * sr - si * si, 2.0 * sr * si);
+		// Squared back in two halves, so that `|z|` near the overflow threshold
+		// stays finite.
+		let back = (
+			2.0 * ((sr / 2.0) * sr - (si / 2.0) * si),
+			4.0 * ((sr / 2.0) * si),
+		);
 		let scale = re.hypot(im);
-		let tol = 8.0 * f64::EPSILON * scale;
+		let tol = 8.0 * f64::EPSILON * scale + 8.0 * TINY64;
 		prop_assert!(
 			(back.0 - re).abs() <= tol && (back.1 - im).abs() <= tol,
 			"sqrt({re:e}, {im:e}) = ({sr:e}, {si:e})"
@@ -274,4 +282,24 @@ fn sqrt_of_negative_zero_imaginary() {
 	assert!(im == 0.0 && im.is_sign_positive());
 	let (re, im) = complex_sqrt(-4.0f64, -0.0);
 	assert_eq!((re, im), (0.0, 2.0));
+}
+
+/// NaN, infinite and zero inputs of `sqrt` (C99 `csqrt` conventions, except
+/// the sign of a zero imaginary part for `im = -0`).
+#[test]
+fn sqrt_special_values() {
+	let inf = f64::INFINITY;
+	for (re, im) in [(f64::NAN, 1.0), (1.0, f64::NAN), (f64::NAN, f64::NAN)] {
+		let (a, b) = complex_sqrt(re, im);
+		assert!(a.is_nan() && b.is_nan(), "sqrt({re}, {im})");
+	}
+	assert_eq!(complex_sqrt(1.0, inf), (inf, inf));
+	assert_eq!(complex_sqrt(-1.0, -inf), (inf, -inf));
+	assert_eq!(complex_sqrt(inf, 1.0), (inf, 0.0));
+	assert_eq!(complex_sqrt(-inf, 1.0), (0.0, inf));
+	assert_eq!(complex_sqrt(-inf, -1.0), (0.0, -inf));
+	assert_eq!(complex_sqrt(0.0, 0.0), (0.0, 0.0));
+	assert_eq!(complex_sqrt(-0.0, 0.0), (0.0, 0.0));
+	let (re, im) = complex_sqrt(inf, -1.0);
+	assert!(re == inf && im == 0.0 && im.is_sign_negative());
 }

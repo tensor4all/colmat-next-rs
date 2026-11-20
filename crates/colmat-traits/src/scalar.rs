@@ -406,10 +406,14 @@ pub(crate) fn complex_recip<T: RealField>(re: T, im: T) -> (T, T) {
 	let re_abs = &abs(re);
 	let im_abs = &abs(im);
 	if re_abs > big || im_abs > big {
-		let re = re * small;
-		let im = im * small;
+		// `sqrt(safe_min)` alone leaves the squares of parts near the overflow
+		// threshold overflowing; `sqrt(safe_min) eps` keeps them finite, as in
+		// `complex_abs`.
+		let scale = &(small * &eps::<T>());
+		let re = re * scale;
+		let im = im * scale;
 		let inv = &recip(&(abs2(&re) + abs2(&im)));
-		((re * inv) * small, (-im * inv) * small)
+		((re * inv) * scale, (-im * inv) * scale)
 	} else if re_abs > one || im_abs > one {
 		let inv = &recip(&(abs2(re) + abs2(im)));
 		(re * inv, -im * inv)
@@ -431,20 +435,47 @@ pub(crate) fn complex_recip<T: RealField>(re: T, im: T) -> (T, T) {
 }
 
 /// Principal square root of `re + i im`.
+///
+/// The larger component is `t = sqrt((|z| + |re|) / 2)`, computed without
+/// cancellation, and the smaller one is `|im| / (2 t)` (Kahan's method). The
+/// imaginary part takes the sign of `im`, except that `im = -0` gives `+0`
+/// (colmat-rs's convention; C99 `csqrt` gives `-0`).
 pub(crate) fn complex_sqrt<T: RealField>(re: T, im: T) -> (T, T) {
-	let im_negative = im < zero();
-	let half = &from_f64::<T>(0.5);
-	let abs = &complex_abs(re.clone(), im);
+	let (re, im) = &(re, im);
+	if is_nan(re) || is_nan(im) {
+		return (nan(), nan());
+	}
 	let zero = &zero::<T>();
-	let re = &re;
-	let mut sum = re + abs;
-	if &sum < zero {
-		sum = zero.clone();
+	let im_negative = im < zero;
+	let signed = |x: T| if im_negative { -x } else { x };
+	if !is_finite(im) {
+		return (infinity(), signed(infinity()));
 	}
-	let out_re = sqrt(&mul_pow2(&sum, half));
-	let mut out_im = sqrt(&max(&mul_pow2(&(abs - re), half), zero));
-	if im_negative {
-		out_im = -out_im;
+	if !is_finite(re) {
+		return if *re > *zero {
+			(infinity(), signed(zero.clone()))
+		} else {
+			(zero.clone(), signed(infinity()))
+		};
 	}
-	(out_re, out_im)
+	let half = &from_f64::<T>(0.5);
+	let abs = &complex_abs(re.clone(), im.clone());
+	let re_abs = &crate::math_utils::abs(re);
+	// Halve before adding when the sum could overflow; below 1 halve after,
+	// so that no subnormal is halved.
+	let sum = if abs > &one::<T>() {
+		mul_pow2(abs, half) + mul_pow2(re_abs, half)
+	} else {
+		mul_pow2(&(abs + re_abs), half)
+	};
+	let t = sqrt(&sum);
+	if t == *zero {
+		return (zero.clone(), zero.clone());
+	}
+	let small = mul_pow2(&(crate::math_utils::abs(im) / &t), half);
+	if *re >= *zero {
+		(t, signed(small))
+	} else {
+		(small, signed(t))
+	}
 }

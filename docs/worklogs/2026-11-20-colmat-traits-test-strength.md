@@ -62,6 +62,17 @@ The fix changes numerical results and is left to its own change.
 A third observation is a convention, not a defect: `sqrt(x - 0i)` returns `+0` as imaginary
 part, where C99 `csqrt` returns `-0`. It is left as colmat-rs has it and pinned by a test.
 
+## Fix (#10)
+
+- `sqrt`: Kahan's method. The larger component is `t = sqrt((|z| + |re|) / 2)` (halved before
+  the sum when `|z| > 1`, so that it cannot overflow, and after it otherwise, so that no subnormal
+  is halved); the smaller is `|im| / (2 t)`. NaN, infinite and zero inputs follow C99 `csqrt`,
+  except that `im = -0` still gives a `+0` imaginary part.
+- `recip`: the big-value branch scales by `sqrt(safe_min) · eps`, as `complex_abs` does.
+- The two ignored properties are enabled, the `sqrt` properties cover the whole exponent range,
+  and `sqrt_special_values` pins the special cases. Mutation run (fixed seed): 0 missed; the
+  `sqrt` exclusion now covers only `>`/`>=` at two points where both give the same result.
+
 ## Remaining
 
 - The x86-64 V3 pass runs only where the host has AVX2/FMA; no x86 host was available locally.
