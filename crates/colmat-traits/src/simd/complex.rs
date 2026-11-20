@@ -21,6 +21,12 @@ use pulp::Simd;
 /// parts). A real register holds the same value in both.
 pub struct ComplexSimd<P>(PhantomData<P>);
 
+impl<P> Default for ComplexSimd<P> {
+	fn default() -> Self {
+		ComplexSimd(PhantomData)
+	}
+}
+
 impl<P> core::fmt::Debug for ComplexSimd<P> {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		f.write_str("ComplexSimd")

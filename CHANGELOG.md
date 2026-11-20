@@ -13,5 +13,8 @@ All notable changes are recorded here. The format follows
 - `colmat-traits` (#6): `ComplexField`/`RealField` with scalar arithmetic only, `Precision`
   (`eps`, `safe_min`, `safe_max`), and SIMD providers split from the scalar trait (`SimdLayout`,
   `SimdField`, `SimdPairs`; `NoSimd`, `NativeSimd`, `ComplexSimd`). Ported from colmat-rs `faer-traits`.
+- `colmat-traits` tests (#8): property tests (proptest) for every provider and for the scaled complex functions, an
+  explicit AVX2/FMA pass on x86-64, and weekly mutation testing. They found two defects inherited from colmat-rs
+  (`sqrt` cancellation, `recip` underflow near overflow), recorded in `docs/worklogs/2026-11-20-colmat-traits-test-strength.md`.
 - Workspace setup: MSRV 1.89, pinned toolchain 1.96.0, rustfmt and lint configuration, Miri in the
   nightly heavy tests.

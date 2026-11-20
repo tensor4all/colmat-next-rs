@@ -1,0 +1,42 @@
+name: Mutants
+
+# Mutation testing of `colmat-traits` (#8): finds tests that execute code without checking it.
+# Weekly and on demand; not a merge gate and not part of `ci-gate`. A mutant that survives
+# fails this run: add a test that kills it, or exclude it in `.cargo/mutants.toml` with the
+# reason. The list of results is uploaded as an artifact.
+
+on:
+  schedule:
+    # Sunday 18:00 UTC = Monday 03:00 JST.
+    - cron: "0 18 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: mutants
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  mutants:
+    name: cargo-mutants (colmat-traits)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants@27.1.0
+      - name: Mutants
+        run: cargo mutants -p colmat-traits --profile ci --jobs 2
+      - name: Upload results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants.out
+          path: mutants.out

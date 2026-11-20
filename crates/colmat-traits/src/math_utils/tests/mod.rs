@@ -164,3 +164,47 @@ fn sqrt_of_subnormal_complex() {
 	let z = Complex::new(3.0 * s * s, -4.0 * s * s);
 	assert_eq!(sqrt(&z), Complex::new(2.0 * s, -s));
 }
+
+/// `max`/`min` return `rhs` when the operands compare equal or unordered,
+/// which fixes the sign of a zero result.
+#[test]
+fn max_min_ties_and_nan() {
+	assert_eq!(max(&2.0, &1.0), 2.0);
+	assert_eq!(max(&1.0, &2.0), 2.0);
+	assert_eq!(min(&2.0, &1.0), 1.0);
+	assert_eq!(min(&1.0, &2.0), 1.0);
+	assert!(max(&0.0f64, &-0.0).is_sign_negative());
+	assert!(min(&-0.0f64, &0.0).is_sign_positive());
+	assert_eq!(max(&f64::NAN, &1.0), 1.0);
+	assert!(max(&1.0, &f64::NAN).is_nan());
+	assert_eq!(min(&f64::NAN, &1.0), 1.0);
+	use crate::ext::RealFieldExt;
+	assert_eq!(3.0f64.fmax(4.0), 4.0);
+	assert_eq!(3.0f64.fmin(4.0), 3.0);
+	assert_eq!(3.0f64.hypot(4.0), 5.0);
+}
+
+#[test]
+fn absmax_and_ext_predicates() {
+	use crate::ext::ComplexFieldExt;
+	assert_eq!(absmax(&Complex::new(3.0, -4.0)), 7.0);
+	assert_eq!(absmax(&-3.0f64), 3.0);
+	// Through the extension trait (num-complex has inherent methods of the
+	// same names).
+	let z = Complex::new(f64::NAN, 1.0);
+	assert!(ComplexFieldExt::is_nan(&z) && !ComplexFieldExt::is_finite(&z));
+	let w = Complex::new(1.0, 2.0);
+	assert!(!ComplexFieldExt::is_nan(&w) && ComplexFieldExt::is_finite(&w));
+	assert!(is_finite(&1.0f64) && !is_finite(&f64::INFINITY));
+}
+
+/// `digits` rejects an `eps` that no valid `Precision` declares.
+#[test]
+fn digits_of_invalid_eps() {
+	assert_eq!(digits_of(f64::INFINITY), 0);
+	assert_eq!(digits_of(f64::NAN), 0);
+	assert_eq!(digits_of(0.0f64), 0);
+	assert_eq!(digits_of(-f64::EPSILON), 0);
+	assert_eq!(digits_of(0.5f64), 2);
+	assert_eq!(digits_of(1.0f64), 1);
+}
