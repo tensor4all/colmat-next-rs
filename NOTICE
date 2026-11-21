@@ -1,0 +1,27 @@
+colmat-next-rs is a trial rebuild of colmat (https://github.com/tensor4all/colmat-rs).
+
+Ported material
+  Code in crates/colmat-traits and crates/colmat-core is ported from colmat-rs
+  (https://github.com/tensor4all/colmat-rs), which is a fork of faer:
+
+    faer
+    https://codeberg.org/sarah-quinones/faer
+    Copyright (c) 2026 sarah quiñones el kazdadi
+    License: MIT
+
+  colmat-rs states (its NOTICE) that its source is upstream faer plus
+  tensor4all modifications, and that those modifications are Copyright (c)
+  tensor4all contributors and released under the same MIT license. The ported
+  files carry both: faer's notice and the tensor4all contributors' modifications,
+  under MIT. The MIT text with faer's copyright line is in each crate's
+  LICENSE-faer. Each ported module names the colmat-rs file and commit it was
+  ported from and what was changed.
+
+  No file ported so far comes from the parts of colmat-rs that are themselves
+  ported from other projects (Eigen, LAPACK, reference BLAS); those keep their
+  own licenses in colmat-rs and are not in this repository.
+
+This repository
+  https://github.com/tensor4all/colmat-next-rs
+  Changes made here are Copyright (c) tensor4all contributors, MIT (see LICENSE;
+  the license of this repository is a placeholder, see README.md).

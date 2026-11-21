@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/colmat-traits"]
+members = ["crates/colmat-traits", "crates/colmat-core"]
 resolver = "3"
 
 [workspace.package]
@@ -19,6 +19,10 @@ pulp = { version = "0.22.2", default-features = false }
 paste = "1.0.15"
 proptest = { version = "1.5.0", default-features = false, features = ["std"] }
 num-traits = { version = "0.2.19", default-features = false }
+dyn-stack = { version = "0.13.2", default-features = false, features = ["core-error", "alloc"] }
+equator = "0.6.0"
+generativity = "1.1.0"
+reborrow = "0.5.5"
 
 # Each lint names the failure it prevents (AGENTS.md, "Proportionate safety and validation").
 [workspace.lints.rust]

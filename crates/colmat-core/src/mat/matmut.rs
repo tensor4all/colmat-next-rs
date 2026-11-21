@@ -1,0 +1,2112 @@
+use super::{MatRef, *};
+use crate::internal_prelude::*;
+use crate::utils::bound::{Dim, Partition};
+use crate::{Conj, ContiguousFwd, Idx, IdxInc};
+use core::mem::MaybeUninit;
+
+use crate::zip::Last;
+use colmat_traits::ComplexField;
+use equator::assert;
+use generativity::Guard;
+/// see [`super::MatMut`]
+pub struct Mut<
+	'a,
+	T,
+	Rows = usize,
+	Cols = usize,
+	RStride = isize,
+	CStride = isize,
+> {
+	pub(super) imp: MatView<T, Rows, Cols, RStride, CStride>,
+	pub(super) __marker: PhantomData<&'a mut T>,
+}
+
+/// write-only mutable matrix view over possibly uninitialized storage.
+///
+/// This type deliberately does not implement any operation that forms a
+/// reference to `T`. It is used by overwrite-only kernels, which write through
+/// the raw pointer and return an initialized view only after a full write.
+pub struct UninitMut<
+	'a,
+	T,
+	Rows = usize,
+	Cols = usize,
+	RStride = isize,
+	CStride = isize,
+> {
+	pub(super) imp: MatView<MaybeUninit<T>, Rows, Cols, RStride, CStride>,
+	pub(super) __marker: PhantomData<&'a mut MaybeUninit<T>>,
+}
+
+// SAFETY: `UninitMut` is semantically a `&'a mut` to its `MaybeUninit<T>`
+// elements (see `__marker`); the raw pointer only opts it out of the auto impl.
+// `&mut MaybeUninit<T>` is `Sync` when `T: Sync`, and the dimension and stride
+// fields are `Sync` by the bounds.
+unsafe impl<T: Sync, Rows: Sync, Cols: Sync, RStride: Sync, CStride: Sync> Sync
+	for UninitMut<'_, T, Rows, Cols, RStride, CStride>
+{
+}
+// SAFETY: as for `Sync` above: `&mut MaybeUninit<T>` is `Send` when `T: Send`,
+// and the other fields are `Send` by the bounds.
+unsafe impl<T: Send, Rows: Send, Cols: Send, RStride: Send, CStride: Send> Send
+	for UninitMut<'_, T, Rows, Cols, RStride, CStride>
+{
+}
+
+impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride>
+	MatUninitMut<'a, T, Rows, Cols, RStride, CStride>
+{
+	/// creates a write-only matrix view from a raw pointer.
+	///
+	/// # Safety
+	/// `ptr` must be non-null and properly aligned for `MaybeUninit<T>`, even
+	/// for an empty matrix. the pointed-to memory must contain the complete
+	/// matrix described by the dimensions and strides, and remain exclusively
+	/// borrowed for `'a`. Matrix elements must not overlap
+	/// each other. Unlike [`MatMut::from_raw_parts_mut`], the elements do not
+	/// need to be initialized.
+	#[inline]
+	#[track_caller]
+	pub const unsafe fn from_raw_parts_mut(
+		ptr: *mut MaybeUninit<T>,
+		nrows: Rows,
+		ncols: Cols,
+		row_stride: RStride,
+		col_stride: CStride,
+	) -> Self {
+		// SAFETY: the caller guarantees that `ptr` is non-null, even for an
+		// empty matrix (# Safety above).
+		unsafe {
+			generic::Mat(UninitMut {
+				imp: MatView {
+					ptr: NonNull::new_unchecked(ptr),
+					nrows,
+					ncols,
+					row_stride,
+					col_stride,
+				},
+				__marker: PhantomData,
+			})
+		}
+	}
+
+	/// returns the raw pointer to the first matrix element.
+	#[inline]
+	pub fn as_ptr_mut(&self) -> *mut MaybeUninit<T> {
+		self.imp.ptr.as_ptr()
+	}
+
+	/// returns the number of rows.
+	#[inline]
+	pub fn nrows(&self) -> Rows {
+		self.imp.nrows
+	}
+
+	/// returns the number of columns.
+	#[inline]
+	pub fn ncols(&self) -> Cols {
+		self.imp.ncols
+	}
+
+	/// returns the row stride in elements.
+	#[inline]
+	pub fn row_stride(&self) -> RStride {
+		self.imp.row_stride
+	}
+
+	/// returns the column stride in elements.
+	#[inline]
+	pub fn col_stride(&self) -> CStride {
+		self.imp.col_stride
+	}
+
+	/// converts this view to dynamic dimensions and strides.
+	#[inline]
+	pub fn as_dyn(self) -> MatUninitMut<'a, T, usize, usize, isize, isize> {
+		let ptr = self.as_ptr_mut();
+		let nrows = self.nrows().unbound();
+		let ncols = self.ncols().unbound();
+		let row_stride = self.row_stride().element_stride();
+		let col_stride = self.col_stride().element_stride();
+		// SAFETY: the pointer, dimensions and strides are those of `self`, only
+		// converted to dynamic types, and `self` is consumed, so the contract
+		// of `from_raw_parts_mut` that holds for `self` holds for the result.
+		unsafe {
+			MatUninitMut::from_raw_parts_mut(
+				ptr, nrows, ncols, row_stride, col_stride,
+			)
+		}
+	}
+}
+
+impl<'a, T, Rows: Shape, Cols: Shape>
+	MatUninitMut<'a, T, Rows, Cols, isize, isize>
+{
+	/// creates a column-major write-only view over a `MaybeUninit` slice.
+	#[inline]
+	#[track_caller]
+	pub fn from_column_major_slice_mut(
+		slice: &'a mut [MaybeUninit<T>],
+		nrows: Rows,
+		ncols: Cols,
+	) -> Self {
+		from_slice_assert(nrows.unbound(), ncols.unbound(), slice.len());
+		// SAFETY: `from_slice_assert` checked `nrows * ncols == slice.len()`,
+		// so element `(i, j)` at offset `i + j * nrows` lies in the slice and
+		// distinct indices get distinct offsets; the slice pointer is non-null
+		// and aligned, and `slice` is borrowed mutably for `'a`.
+		unsafe {
+			Self::from_raw_parts_mut(
+				slice.as_mut_ptr(),
+				nrows,
+				ncols,
+				1,
+				nrows.unbound() as isize,
+			)
+		}
+	}
+
+	/// creates a row-major write-only view over a `MaybeUninit` slice.
+	#[inline]
+	#[track_caller]
+	pub fn from_row_major_slice_mut(
+		slice: &'a mut [MaybeUninit<T>],
+		nrows: Rows,
+		ncols: Cols,
+	) -> Self {
+		from_slice_assert(nrows.unbound(), ncols.unbound(), slice.len());
+		// SAFETY: `from_slice_assert` checked `nrows * ncols == slice.len()`,
+		// so element `(i, j)` at offset `i * ncols + j` lies in the slice and
+		// distinct indices get distinct offsets; the slice pointer is non-null
+		// and aligned, and `slice` is borrowed mutably for `'a`.
+		unsafe {
+			Self::from_raw_parts_mut(
+				slice.as_mut_ptr(),
+				nrows,
+				ncols,
+				ncols.unbound() as isize,
+				1,
+			)
+		}
+	}
+}
+impl<'short, T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy>
+	Reborrow<'short> for Mut<'_, T, Rows, Cols, RStride, CStride>
+{
+	type Target = Ref<'short, T, Rows, Cols, RStride, CStride>;
+
+	#[inline]
+	fn rb(&'short self) -> Self::Target {
+		Ref {
+			imp: self.imp,
+			__marker: PhantomData,
+		}
+	}
+}
+impl<'short, T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy>
+	ReborrowMut<'short> for Mut<'_, T, Rows, Cols, RStride, CStride>
+{
+	type Target = Mut<'short, T, Rows, Cols, RStride, CStride>;
+
+	#[inline]
+	fn rb_mut(&'short mut self) -> Self::Target {
+		Mut {
+			imp: self.imp,
+			__marker: PhantomData,
+		}
+	}
+}
+impl<'a, T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy> IntoConst
+	for Mut<'a, T, Rows, Cols, RStride, CStride>
+{
+	type Target = Ref<'a, T, Rows, Cols, RStride, CStride>;
+
+	#[inline]
+	fn into_const(self) -> Self::Target {
+		Ref {
+			imp: self.imp,
+			__marker: PhantomData,
+		}
+	}
+}
+// SAFETY: `Mut` is semantically a `&'a mut` to its elements (see `__marker`);
+// the raw pointer only opts it out of the auto impl. `&mut T` is `Sync` when
+// `T: Sync`, and the dimension and stride fields are `Sync` by the bounds.
+unsafe impl<T: Sync, Rows: Sync, Cols: Sync, RStride: Sync, CStride: Sync> Sync
+	for Mut<'_, T, Rows, Cols, RStride, CStride>
+{
+}
+// SAFETY: as for `Sync` above: `&mut T` is `Send` when `T: Send`, and the other
+// fields are `Send` by the bounds.
+unsafe impl<T: Send, Rows: Send, Cols: Send, RStride: Send, CStride: Send> Send
+	for Mut<'_, T, Rows, Cols, RStride, CStride>
+{
+}
+impl<'a, T> MatMut<'a, T> {
+	/// equivalent to
+	/// `MatMut::from_row_major_slice_mut(array.as_flattened_mut(), ROWS, COLS)`
+	#[inline]
+	pub fn from_row_major_array_mut<const ROWS: usize, const COLS: usize>(
+		array: &'a mut [[T; COLS]; ROWS],
+	) -> Self {
+		// SAFETY: `array` is borrowed mutably for `'a` and is `ROWS * COLS`
+		// contiguous `T`s; element `(i, j)` at offset `i * COLS + j` lies in it
+		// and distinct indices get distinct offsets. The pointer comes from a
+		// reference, so it is non-null and aligned.
+		unsafe {
+			Self::from_raw_parts_mut(
+				array as *mut _ as *mut T,
+				ROWS,
+				COLS,
+				COLS as isize,
+				1,
+			)
+		}
+	}
+
+	/// equivalent to
+	/// `MatMut::from_column_major_slice_mut(array.as_flattened_mut(), ROWS,
+	/// COLS)`
+	#[inline]
+	pub fn from_column_major_array_mut<const ROWS: usize, const COLS: usize>(
+		array: &'a mut [[T; ROWS]; COLS],
+	) -> Self {
+		// SAFETY: `array` is borrowed mutably for `'a` and is `ROWS * COLS`
+		// contiguous `T`s; element `(i, j)` at offset `i + j * ROWS` lies in it
+		// and distinct indices get distinct offsets. The pointer comes from a
+		// reference, so it is non-null and aligned.
+		unsafe {
+			Self::from_raw_parts_mut(
+				array as *mut _ as *mut T,
+				ROWS,
+				COLS,
+				1,
+				ROWS as isize,
+			)
+		}
+	}
+}
+impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride>
+	MatMut<'a, T, Rows, Cols, RStride, CStride>
+{
+	/// creates a `MatMut` from a pointer to the matrix data, dimensions, and
+	/// strides
+	///
+	/// the row (resp. column) stride is the offset from the memory address of a
+	/// given matrix element at index `(row: i, col: j)`, to the memory address
+	/// of the matrix element at index `(row: i + 1, col: 0)` (resp. `(row: 0,
+	/// col: i + 1)`). this offset is specified in number of elements, not in
+	/// bytes
+	///
+	/// # Safety
+	/// the behavior is undefined if any of the following conditions are
+	/// violated:
+	/// * for each matrix unit, the entire memory region addressed by the matrix
+	///   must be contained
+	///   within a single allocation, accessible in its entirety by the
+	///   corresponding pointer in `ptr`
+	/// * for each matrix unit, the corresponding pointer must be non null and
+	///   properly aligned,
+	///   even for a zero-sized matrix.
+	/// * the values accessible by the matrix must be initialized at some point
+	///   before they are read, or
+	///   references to them are formed
+	/// * no aliasing (including self aliasing) is allowed. in other words, none
+	///   of the elements
+	///   accessible by any matrix unit may be accessed for reads or writes by any
+	///   other means for the duration of the lifetime `'a`. no two elements
+	///   within a single matrix unit may point to the same address (such a thing
+	///   can be achieved with a zero stride, for example), and no two
+	///   matrix units may point to the same address
+	///
+	/// # example
+	///
+	/// ```
+	/// use colmat_core::{MatMut, mat};
+	/// // row major matrix with 2 rows, 3 columns, with a column at the end that we want to skip.
+	/// // the row stride is the pointer offset from the address of 1.0 to the address of 4.0,
+	/// // which is 4
+	/// // the column stride is the pointer offset from the address of 1.0 to the address of 2.0,
+	/// // which is 1
+	/// let mut data = [[1.0, 2.0, 3.0, f64::NAN], [4.0, 5.0, 6.0, f64::NAN]];
+	/// let mut matrix =
+	///     unsafe { MatMut::from_raw_parts_mut(data.as_mut_ptr() as *mut f64, 2, 3, 4, 1) };
+	/// let expected = mat![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+	/// assert_eq!(expected.as_ref(), matrix);
+	/// ```
+	#[inline]
+	#[track_caller]
+	pub const unsafe fn from_raw_parts_mut(
+		ptr: *mut T,
+		nrows: Rows,
+		ncols: Cols,
+		row_stride: RStride,
+		col_stride: CStride,
+	) -> Self {
+		// SAFETY: the caller upholds this function's contract (# Safety above),
+		// which requires `ptr` to be non-null even for an empty matrix, as
+		// `NonNull::new_unchecked` needs.
+		unsafe {
+			MatMut {
+				0: Mut {
+					imp: MatView {
+						ptr: NonNull::new_unchecked(ptr),
+						nrows,
+						ncols,
+						row_stride,
+						col_stride,
+					},
+					__marker: PhantomData,
+				},
+			}
+		}
+	}
+
+	/// returns a pointer to the matrix data
+	#[inline]
+	pub fn as_ptr(&self) -> *const T {
+		self.imp.ptr.as_ptr()
+	}
+
+	/// returns the number of rows of the matrix
+	#[inline]
+	pub fn nrows(&self) -> Rows {
+		self.imp.nrows
+	}
+
+	/// returns the number of columns of the matrix
+	#[inline]
+	pub fn ncols(&self) -> Cols {
+		self.imp.ncols
+	}
+
+	/// returns the number of rows and columns of the matrix
+	#[inline]
+	pub fn shape(&self) -> (Rows, Cols) {
+		(self.nrows(), self.ncols())
+	}
+
+	/// returns the row stride of the matrix, specified in number of elements,
+	/// not in bytes
+	#[inline]
+	pub fn row_stride(&self) -> RStride {
+		self.imp.row_stride
+	}
+
+	/// returns the column stride of the matrix, specified in number of
+	/// elements, not in bytes
+	#[inline]
+	pub fn col_stride(&self) -> CStride {
+		self.imp.col_stride
+	}
+
+	/// returns a matrix whose elements are `f` applied to the elements of
+	/// `self`
+	#[inline]
+	pub fn map<U>(&self, f: impl Fn(&T) -> U) -> Mat<U, Rows, Cols> {
+		self.rb().map(f)
+	}
+
+	/// calls `f` on each element of `self`
+	#[inline]
+	pub fn for_each(&self, f: impl Fn(&T)) {
+		self.rb().for_each(f)
+	}
+
+	/// returns a matrix whose elements are `f` applied to mutable references
+	/// to the elements of `self`
+	#[inline]
+	pub fn map_mut<U>(
+		&mut self,
+		f: impl FnMut(&mut T) -> U,
+	) -> Mat<U, Rows, Cols> {
+		let mut f = f;
+		zip!(self).map(|unzip!(x)| f(x))
+	}
+
+	/// calls `f` on a mutable reference to each element of `self`
+	#[inline]
+	pub fn for_each_mut(&mut self, f: impl FnMut(&mut T)) {
+		let mut f = f;
+		zip!(self).for_each(|unzip!(x)| f(x))
+	}
+
+	/// returns a raw pointer to the element at the given index
+	#[inline]
+	pub fn ptr_at(&self, row: IdxInc<Rows>, col: IdxInc<Cols>) -> *const T {
+		self.rb().ptr_at(row, col)
+	}
+
+	/// returns a raw pointer to the element at the given index, assuming the
+	/// provided index is within the matrix bounds
+	///
+	/// # Safety
+	/// the behavior is undefined if any of the following conditions are
+	/// violated:
+	/// * `row < self.nrows()`
+	/// * `col < self.ncols()`
+	#[inline]
+	#[track_caller]
+	pub unsafe fn ptr_inbounds_at(
+		&self,
+		row: Idx<Rows>,
+		col: Idx<Cols>,
+	) -> *const T {
+		// SAFETY: the caller guarantees `row < self.nrows()` and `col <
+		// self.ncols()` (# Safety above); `self.rb()` has the same dimensions,
+		// so this is the precondition of `MatRef::ptr_inbounds_at`.
+		unsafe { self.rb().ptr_inbounds_at(row, col) }
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::split_at`]
+	pub fn split_at(
+		self,
+		row: IdxInc<Rows>,
+		col: IdxInc<Cols>,
+	) -> (
+		MatRef<'a, T, usize, usize, RStride, CStride>,
+		MatRef<'a, T, usize, usize, RStride, CStride>,
+		MatRef<'a, T, usize, usize, RStride, CStride>,
+		MatRef<'a, T, usize, usize, RStride, CStride>,
+	) {
+		self.into_const().split_at(row, col)
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::split_at_row`]
+	pub fn split_at_row(
+		self,
+		row: IdxInc<Rows>,
+	) -> (
+		MatRef<'a, T, usize, Cols, RStride, CStride>,
+		MatRef<'a, T, usize, Cols, RStride, CStride>,
+	) {
+		self.into_const().split_at_row(row)
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::split_at_col`]
+	pub fn split_at_col(
+		self,
+		col: IdxInc<Cols>,
+	) -> (
+		MatRef<'a, T, Rows, usize, RStride, CStride>,
+		MatRef<'a, T, Rows, usize, RStride, CStride>,
+	) {
+		self.into_const().split_at_col(col)
+	}
+
+	#[inline]
+	/// see [`MatRef::transpose`]
+	pub fn transpose(self) -> MatRef<'a, T, Cols, Rows, CStride, RStride> {
+		MatRef {
+			0: Ref {
+				imp: MatView {
+					ptr: self.imp.ptr,
+					nrows: self.imp.ncols,
+					ncols: self.imp.nrows,
+					row_stride: self.imp.col_stride,
+					col_stride: self.imp.row_stride,
+				},
+				__marker: PhantomData,
+			},
+		}
+	}
+
+	#[inline]
+	/// see [`MatRef::conjugate`]
+	pub fn conjugate(self) -> MatRef<'a, T::Conj, Rows, Cols, RStride, CStride>
+	where
+		T: Conjugate,
+	{
+		self.into_const().conjugate()
+	}
+
+	#[inline]
+	/// see [`MatRef::canonical`]
+	pub fn canonical(
+		self,
+	) -> MatRef<'a, T::Canonical, Rows, Cols, RStride, CStride>
+	where
+		T: Conjugate,
+	{
+		self.into_const().canonical()
+	}
+
+	#[inline]
+	/// see [`MatRef::adjoint`]
+	pub fn adjoint(self) -> MatRef<'a, T::Conj, Cols, Rows, CStride, RStride>
+	where
+		T: Conjugate,
+	{
+		self.into_const().adjoint()
+	}
+
+	#[inline]
+	/// see [`MatRef::reverse_rows`]
+	pub fn reverse_rows(
+		self,
+	) -> MatRef<'a, T, Rows, Cols, RStride::Rev, CStride> {
+		self.into_const().reverse_rows()
+	}
+
+	#[inline]
+	/// see [`MatRef::reverse_cols`]
+	pub fn reverse_cols(
+		self,
+	) -> MatRef<'a, T, Rows, Cols, RStride, CStride::Rev> {
+		self.into_const().reverse_cols()
+	}
+
+	#[inline]
+	/// see [`MatRef::reverse_rows_and_cols`]
+	pub fn reverse_rows_and_cols(
+		self,
+	) -> MatRef<'a, T, Rows, Cols, RStride::Rev, CStride::Rev> {
+		self.into_const().reverse_rows_and_cols()
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::submatrix`]
+	pub fn submatrix<V: Shape, H: Shape>(
+		self,
+		row_start: IdxInc<Rows>,
+		col_start: IdxInc<Cols>,
+		nrows: V,
+		ncols: H,
+	) -> MatRef<'a, T, V, H, RStride, CStride> {
+		self.into_const()
+			.submatrix(row_start, col_start, nrows, ncols)
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::subrows`]
+	pub fn subrows<V: Shape>(
+		self,
+		row_start: IdxInc<Rows>,
+		nrows: V,
+	) -> MatRef<'a, T, V, Cols, RStride, CStride> {
+		self.into_const().subrows(row_start, nrows)
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::subcols`]
+	pub fn subcols<H: Shape>(
+		self,
+		col_start: IdxInc<Cols>,
+		ncols: H,
+	) -> MatRef<'a, T, Rows, H, RStride, CStride> {
+		self.into_const().subcols(col_start, ncols)
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::as_shape`]
+	pub fn as_shape<V: Shape, H: Shape>(
+		self,
+		nrows: V,
+		ncols: H,
+	) -> MatRef<'a, T, V, H, RStride, CStride> {
+		self.into_const().as_shape(nrows, ncols)
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::as_row_shape`]
+	pub fn as_row_shape<V: Shape>(
+		self,
+		nrows: V,
+	) -> MatRef<'a, T, V, Cols, RStride, CStride> {
+		self.into_const().as_row_shape(nrows)
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::as_col_shape`]
+	pub fn as_col_shape<H: Shape>(
+		self,
+		ncols: H,
+	) -> MatRef<'a, T, Rows, H, RStride, CStride> {
+		self.into_const().as_col_shape(ncols)
+	}
+
+	#[inline]
+	/// see [`MatRef::as_dyn_stride`]
+	pub fn as_dyn_stride(self) -> MatRef<'a, T, Rows, Cols, isize, isize> {
+		self.into_const().as_dyn_stride()
+	}
+
+	#[inline]
+	/// see [`MatRef::as_dyn`]
+	pub fn as_dyn(self) -> MatRef<'a, T, usize, usize, RStride, CStride> {
+		self.into_const().as_dyn()
+	}
+
+	#[inline]
+	/// see [`MatRef::as_dyn_rows`]
+	pub fn as_dyn_rows(self) -> MatRef<'a, T, usize, Cols, RStride, CStride> {
+		self.into_const().as_dyn_rows()
+	}
+
+	#[inline]
+	/// see [`MatRef::as_dyn_cols`]
+	pub fn as_dyn_cols(self) -> MatRef<'a, T, Rows, usize, RStride, CStride> {
+		self.into_const().as_dyn_cols()
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::row`]
+	pub fn row(self, i: Idx<Rows>) -> RowRef<'a, T, Cols, CStride> {
+		self.into_const().row(i)
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::col`]
+	pub fn col(self, j: Idx<Cols>) -> ColRef<'a, T, Rows, RStride> {
+		self.into_const().col(j)
+	}
+
+	#[inline]
+	/// see [`MatRef::col_iter`]
+	pub fn col_iter(
+		self,
+	) -> impl 'a
+	+ ExactSizeIterator
+	+ DoubleEndedIterator<Item = ColRef<'a, T, Rows, RStride>>
+	where
+		Rows: 'a,
+		Cols: 'a,
+	{
+		self.into_const().col_iter()
+	}
+
+	#[inline]
+	/// see [`MatRef::row_iter`]
+	pub fn row_iter(
+		self,
+	) -> impl 'a
+	+ ExactSizeIterator
+	+ DoubleEndedIterator<Item = RowRef<'a, T, Cols, CStride>>
+	where
+		Rows: 'a,
+		Cols: 'a,
+	{
+		self.into_const().row_iter()
+	}
+
+	#[inline]
+	/// see [`MatRef::try_as_col_major`]
+	pub fn try_as_col_major(
+		self,
+	) -> Option<MatRef<'a, T, Rows, Cols, ContiguousFwd, CStride>> {
+		self.into_const().try_as_col_major()
+	}
+
+	#[inline]
+	/// see [`MatRef::try_as_row_major`]
+	pub fn try_as_row_major(
+		self,
+	) -> Option<MatRef<'a, T, Rows, Cols, RStride, ContiguousFwd>> {
+		self.into_const().try_as_row_major()
+	}
+
+	/// identity on mutable views, for symmetry with [`MatRef::const_cast`]
+	///
+	/// # Safety
+	/// none: `self` is already a mutable view.
+	#[doc(hidden)]
+	#[inline]
+	pub unsafe fn const_cast(
+		self,
+	) -> MatMut<'a, T, Rows, Cols, RStride, CStride> {
+		self
+	}
+
+	#[doc(hidden)]
+	#[inline]
+	pub fn bind<'M, 'N>(
+		self,
+		row: Guard<'M>,
+		col: Guard<'N>,
+	) -> MatMut<'a, T, Dim<'M>, Dim<'N>, RStride, CStride> {
+		// SAFETY: the pointer, strides and dimension values are those of `self`
+		// (binding only brands the dimensions), and `self` is consumed, so its
+		// exclusive borrow passes to the result and the view invariant carries
+		// over.
+		unsafe {
+			MatMut::from_raw_parts_mut(
+				self.as_ptr_mut(),
+				self.nrows().bind(row),
+				self.ncols().bind(col),
+				self.row_stride(),
+				self.col_stride(),
+			)
+		}
+	}
+
+	#[doc(hidden)]
+	#[inline]
+	pub fn bind_r<'M>(
+		self,
+		row: Guard<'M>,
+	) -> MatMut<'a, T, Dim<'M>, Cols, RStride, CStride> {
+		// SAFETY: as in `bind`: the pointer, strides and dimension values are
+		// those of `self` (binding only brands the dimensions), and `self` is
+		// consumed, so its exclusive borrow passes to the result and the view
+		// invariant carries over.
+		unsafe {
+			MatMut::from_raw_parts_mut(
+				self.as_ptr_mut(),
+				self.nrows().bind(row),
+				self.ncols(),
+				self.row_stride(),
+				self.col_stride(),
+			)
+		}
+	}
+
+	#[doc(hidden)]
+	#[inline]
+	pub fn bind_c<'N>(
+		self,
+		col: Guard<'N>,
+	) -> MatMut<'a, T, Rows, Dim<'N>, RStride, CStride> {
+		// SAFETY: as in `bind`: the pointer, strides and dimension values are
+		// those of `self` (binding only brands the dimensions), and `self` is
+		// consumed, so its exclusive borrow passes to the result and the view
+		// invariant carries over.
+		unsafe {
+			MatMut::from_raw_parts_mut(
+				self.as_ptr_mut(),
+				self.nrows(),
+				self.ncols().bind(col),
+				self.row_stride(),
+				self.col_stride(),
+			)
+		}
+	}
+
+	#[track_caller]
+	#[inline]
+	/// see [`MatRef::get`]
+	pub fn get<RowRange, ColRange>(
+		self,
+		row: RowRange,
+		col: ColRange,
+	) -> <MatRef<'a, T, Rows, Cols, RStride, CStride> as MatIndex<
+		RowRange,
+		ColRange,
+	>>::Target
+	where
+		MatRef<'a, T, Rows, Cols, RStride, CStride>:
+			MatIndex<RowRange, ColRange>,
+	{
+		<MatRef<'a, T, Rows, Cols, RStride, CStride> as MatIndex<
+			RowRange,
+			ColRange,
+		>>::get(self.into_const(), row, col)
+	}
+
+	#[track_caller]
+	#[inline]
+	/// see [`MatRef::get_unchecked`]
+	///
+	/// # Safety
+	/// same as [`MatRef::get_unchecked`]
+	pub unsafe fn get_unchecked<RowRange, ColRange>(
+		self,
+		row: RowRange,
+		col: ColRange,
+	) -> <MatRef<'a, T, Rows, Cols, RStride, CStride> as MatIndex<
+		RowRange,
+		ColRange,
+	>>::Target
+	where
+		MatRef<'a, T, Rows, Cols, RStride, CStride>:
+			MatIndex<RowRange, ColRange>,
+	{
+		// SAFETY: the caller upholds this function's contract (# Safety above),
+		// which is that of `MatIndex::get_unchecked` on the same view.
+		unsafe {
+			<MatRef<'a, T, Rows, Cols, RStride, CStride> as MatIndex<
+				RowRange,
+				ColRange,
+			>>::get_unchecked(self.into_const(), row, col)
+		}
+	}
+
+	/// see [`MatRef::get`]
+	#[track_caller]
+	#[inline]
+	pub fn get_mut<RowRange, ColRange>(
+		self,
+		row: RowRange,
+		col: ColRange,
+	) -> <MatMut<'a, T, Rows, Cols, RStride, CStride> as MatIndex<
+		RowRange,
+		ColRange,
+	>>::Target
+	where
+		MatMut<'a, T, Rows, Cols, RStride, CStride>:
+			MatIndex<RowRange, ColRange>,
+	{
+		<MatMut<'a, T, Rows, Cols, RStride, CStride> as MatIndex<
+			RowRange,
+			ColRange,
+		>>::get(self, row, col)
+	}
+
+	/// see [`MatRef::get_unchecked`]
+	///
+	/// # Safety
+	/// same as [`MatRef::get_unchecked`]
+	#[track_caller]
+	#[inline]
+	pub unsafe fn get_mut_unchecked<RowRange, ColRange>(
+		self,
+		row: RowRange,
+		col: ColRange,
+	) -> <MatMut<'a, T, Rows, Cols, RStride, CStride> as MatIndex<
+		RowRange,
+		ColRange,
+	>>::Target
+	where
+		MatMut<'a, T, Rows, Cols, RStride, CStride>:
+			MatIndex<RowRange, ColRange>,
+	{
+		// SAFETY: the caller upholds this function's contract (# Safety above),
+		// which is that of `MatIndex::get_unchecked` on the same view.
+		unsafe {
+			<MatMut<'a, T, Rows, Cols, RStride, CStride> as MatIndex<
+				RowRange,
+				ColRange,
+			>>::get_unchecked(self, row, col)
+		}
+	}
+}
+impl<
+	T,
+	Rows: Shape,
+	Cols: Shape,
+	RStride: Stride,
+	CStride: Stride,
+	Inner: for<'short> ReborrowMut<
+			'short,
+			Target = Mut<'short, T, Rows, Cols, RStride, CStride>,
+		>,
+> generic::Mat<Inner>
+{
+	/// returns a view over `self`
+	#[inline]
+	pub fn as_mut(&mut self) -> MatMut<'_, T, Rows, Cols, RStride, CStride> {
+		self.rb_mut()
+	}
+
+	/// copies the lower triangular half of `other`, including the diagonal,
+	/// into `self`
+	#[inline]
+	#[track_caller]
+	pub fn copy_from_triangular_lower<RhsT: Conjugate<Canonical = T>>(
+		&mut self,
+		other: impl AsMatRef<T = RhsT, Rows = Rows, Cols = Cols>,
+	) where
+		T: ComplexField,
+	{
+		let other = other.as_mat_ref();
+		let mut this = self.rb_mut();
+		assert!(all(
+			this.nrows() == other.nrows(),
+			this.ncols() == other.ncols(),
+		));
+		let (m, n) = this.shape();
+		make_guard!(M);
+		make_guard!(N);
+		let M = m.bind(M);
+		let N = n.bind(N);
+		let this = this.rb_mut().as_shape_mut(M, N).as_dyn_stride_mut();
+		let other = other.as_shape(M, N);
+		imp(this, other.canonical(), Conj::get::<RhsT>());
+		pub fn imp<'M, 'N, T: ComplexField>(
+			mut this: MatMut<'_, T, Dim<'M>, Dim<'N>>,
+			other: MatRef<'_, T, Dim<'M>, Dim<'N>>,
+			conj_: Conj,
+		) {
+			match conj_ {
+				Conj::No => {
+					// a row-major source into a column-major destination: in
+					// tiles, not one strided read per element
+					if crate::layout::copy_lower_across_layouts(
+						this.rb_mut().as_dyn_mut(),
+						other.as_dyn(),
+					) {
+						return;
+					}
+					zip!(this, other).for_each_triangular_lower(
+						crate::zip::Diag::Include,
+						|unzip!(dst, src)| *dst = src.copy(),
+					);
+				},
+				Conj::Yes => {
+					zip!(this, other).for_each_triangular_lower(
+						crate::zip::Diag::Include,
+						|unzip!(dst, src)| *dst = src.conj(),
+					);
+				},
+			}
+		}
+	}
+
+	/// copies the upper triangular half of `other`, including the diagonal,
+	/// into `self`
+	#[inline]
+	#[track_caller]
+	pub fn copy_from_triangular_upper<RhsT: Conjugate<Canonical = T>>(
+		&mut self,
+		other: impl AsMatRef<T = RhsT, Rows = Rows, Cols = Cols>,
+	) where
+		T: ComplexField,
+	{
+		(*self)
+			.rb_mut()
+			.transpose_mut()
+			.copy_from_triangular_lower(other.as_mat_ref().transpose())
+	}
+
+	/// copies `other` into `self`
+	#[inline]
+	#[track_caller]
+	pub fn copy_from<RhsT: Conjugate<Canonical = T>>(
+		&mut self,
+		other: impl AsMatRef<T = RhsT, Rows = Rows, Cols = Cols>,
+	) where
+		T: ComplexField,
+	{
+		let other = other.as_mat_ref();
+		let mut this = self.rb_mut();
+		assert!(all(
+			this.nrows() == other.nrows(),
+			this.ncols() == other.ncols(),
+		));
+		let (m, n) = this.shape();
+		make_guard!(M);
+		make_guard!(N);
+		let M = m.bind(M);
+		let N = n.bind(N);
+		let this = this.rb_mut().as_shape_mut(M, N).as_dyn_stride_mut();
+		let other = other.as_shape(M, N);
+		imp(this, other.canonical(), Conj::get::<RhsT>());
+		pub fn imp<'M, 'N, T: ComplexField>(
+			this: MatMut<'_, T, Dim<'M>, Dim<'N>>,
+			other: MatRef<'_, T, Dim<'M>, Dim<'N>>,
+			conj_: Conj,
+		) {
+			match conj_ {
+				Conj::No => {
+					zip!(this, other)
+						.for_each(|unzip!(dst, src)| *dst = src.copy());
+				},
+				Conj::Yes => {
+					zip!(this, other)
+						.for_each(|unzip!(dst, src)| *dst = src.conj());
+				},
+			}
+		}
+	}
+
+	/// copies the lower triangular half of `other`, excluding the diagonal,
+	/// into `self`
+	#[inline]
+	#[track_caller]
+	pub fn copy_from_strict_triangular_lower<RhsT: Conjugate<Canonical = T>>(
+		&mut self,
+		other: impl AsMatRef<T = RhsT, Rows = Rows, Cols = Cols>,
+	) where
+		T: ComplexField,
+	{
+		let other = other.as_mat_ref();
+		let mut this = self.rb_mut();
+		assert!(all(
+			this.nrows() == other.nrows(),
+			this.ncols() == other.ncols(),
+		));
+		let (m, n) = this.shape();
+		make_guard!(M);
+		make_guard!(N);
+		let M = m.bind(M);
+		let N = n.bind(N);
+		let this = this.rb_mut().as_shape_mut(M, N).as_dyn_stride_mut();
+		let other = other.as_shape(M, N);
+		imp(this, other.canonical(), Conj::get::<RhsT>());
+		pub fn imp<'M, 'N, T: ComplexField>(
+			this: MatMut<'_, T, Dim<'M>, Dim<'N>>,
+			other: MatRef<'_, T, Dim<'M>, Dim<'N>>,
+			conj_: Conj,
+		) {
+			match conj_ {
+				Conj::No => {
+					zip!(this, other).for_each_triangular_lower(
+						crate::zip::Diag::Skip,
+						|unzip!(dst, src)| *dst = src.copy(),
+					);
+				},
+				Conj::Yes => {
+					zip!(this, other).for_each_triangular_lower(
+						crate::zip::Diag::Skip,
+						|unzip!(dst, src)| *dst = src.conj(),
+					);
+				},
+			}
+		}
+	}
+
+	/// copies the upper triangular half of `other`, excluding the diagonal,
+	/// into `self`
+	#[inline]
+	#[track_caller]
+	pub fn copy_from_strict_triangular_upper<RhsT: Conjugate<Canonical = T>>(
+		&mut self,
+		other: impl AsMatRef<T = RhsT, Rows = Rows, Cols = Cols>,
+	) where
+		T: ComplexField,
+	{
+		(*self)
+			.rb_mut()
+			.transpose_mut()
+			.copy_from_strict_triangular_lower(other.as_mat_ref().transpose())
+	}
+
+	/// fills all the elements of `self` with `value`
+	#[inline]
+	pub fn fill(&mut self, value: T)
+	where
+		T: Clone,
+	{
+		fn cloner<T: Clone>(value: T) -> impl for<'a> FnMut(Last<&'a mut T>) {
+			#[inline]
+			move |x| *x.0 = value.clone()
+		}
+		z!(self.rb_mut().as_dyn_mut()).for_each(cloner::<T>(value));
+	}
+}
+impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride>
+	MatMut<'a, T, Rows, Cols, RStride, CStride>
+{
+	#[inline]
+	/// see [`MatRef::as_ptr`]
+	pub fn as_ptr_mut(&self) -> *mut T {
+		self.imp.ptr.as_ptr()
+	}
+
+	#[inline]
+	/// see [`MatRef::ptr_at`]
+	pub fn ptr_at_mut(&self, row: IdxInc<Rows>, col: IdxInc<Cols>) -> *mut T {
+		self.rb().ptr_at(row, col) as *mut T
+	}
+
+	/// see [`MatRef::ptr_inbounds_at`]
+	///
+	/// # Safety
+	/// `row` and `col` must be in bounds of the view, and no other borrow of
+	/// the element may be live while the returned pointer is used.
+	#[inline]
+	#[track_caller]
+	pub unsafe fn ptr_inbounds_at_mut(
+		&self,
+		row: Idx<Rows>,
+		col: Idx<Cols>,
+	) -> *mut T {
+		// SAFETY: the caller guarantees `row < self.nrows()` and `col <
+		// self.ncols()` (# Safety above), the precondition of
+		// `MatRef::ptr_inbounds_at`; the cast to `*mut` is allowed because
+		// `self` is a mutable view, so by the view invariant the element is
+		// valid for writes.
+		unsafe { self.rb().ptr_inbounds_at(row, col) as *mut T }
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::split_at`]
+	pub fn split_at_mut(
+		self,
+		row: IdxInc<Rows>,
+		col: IdxInc<Cols>,
+	) -> (
+		MatMut<'a, T, usize, usize, RStride, CStride>,
+		MatMut<'a, T, usize, usize, RStride, CStride>,
+		MatMut<'a, T, usize, usize, RStride, CStride>,
+		MatMut<'a, T, usize, usize, RStride, CStride>,
+	) {
+		let (a, b, c, d) = self.into_const().split_at(row, col);
+		// SAFETY: `MatRef::split_at` asserts `row <= nrows` and `col <= ncols`
+		// and returns four views over disjoint row and column blocks of `self`,
+		// so no two results share an element. `const_cast` back to mutable
+		// views is then sound: `self` is consumed, so its exclusive borrow of
+		// its elements for `'a` passes to the results, and by the view
+		// invariant those elements are valid for writes with no other live
+		// reference.
+		unsafe {
+			(
+				a.const_cast(),
+				b.const_cast(),
+				c.const_cast(),
+				d.const_cast(),
+			)
+		}
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::split_at_row`]
+	pub fn split_at_row_mut(
+		self,
+		row: IdxInc<Rows>,
+	) -> (
+		MatMut<'a, T, usize, Cols, RStride, CStride>,
+		MatMut<'a, T, usize, Cols, RStride, CStride>,
+	) {
+		let (a, b) = self.into_const().split_at_row(row);
+		// SAFETY: as in `split_at_mut`: `split_at_row` asserts `row <= nrows`
+		// and returns two views over disjoint row ranges of the consumed
+		// `self`.
+		unsafe { (a.const_cast(), b.const_cast()) }
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::split_at_col`]
+	pub fn split_at_col_mut(
+		self,
+		col: IdxInc<Cols>,
+	) -> (
+		MatMut<'a, T, Rows, usize, RStride, CStride>,
+		MatMut<'a, T, Rows, usize, RStride, CStride>,
+	) {
+		let (a, b) = self.into_const().split_at_col(col);
+		// SAFETY: as in `split_at_mut`: `split_at_col` asserts `col <= ncols`
+		// and returns two views over disjoint column ranges of the consumed
+		// `self`.
+		unsafe { (a.const_cast(), b.const_cast()) }
+	}
+
+	#[inline]
+	/// see [`MatRef::transpose`]
+	pub fn transpose_mut(self) -> MatMut<'a, T, Cols, Rows, CStride, RStride> {
+		MatMut {
+			0: Mut {
+				imp: MatView {
+					ptr: self.imp.ptr,
+					nrows: self.imp.ncols,
+					ncols: self.imp.nrows,
+					row_stride: self.imp.col_stride,
+					col_stride: self.imp.row_stride,
+				},
+				__marker: PhantomData,
+			},
+		}
+	}
+
+	#[inline]
+	/// see [`MatRef::conjugate`]
+	pub fn conjugate_mut(
+		self,
+	) -> MatMut<'a, T::Conj, Rows, Cols, RStride, CStride>
+	where
+		T: Conjugate,
+	{
+		// SAFETY: the result views the same elements as `self`, reinterpreted
+		// as `T::Conj`, which the safety contract of `Conjugate` makes size-,
+		// alignment- and bit-compatible with `T` (so writes through it leave
+		// valid `T`s); so `const_cast` back to a mutable view is sound: `self`
+		// is consumed, so its exclusive borrow of its elements for `'a` passes
+		// to the result, and by the view invariant those elements are valid for
+		// writes with no other live reference.
+		unsafe { self.into_const().conjugate().const_cast() }
+	}
+
+	#[inline]
+	/// see [`MatRef::canonical`]
+	pub fn canonical_mut(
+		self,
+	) -> MatMut<'a, T::Canonical, Rows, Cols, RStride, CStride>
+	where
+		T: Conjugate,
+	{
+		// SAFETY: as in `split_at_mut`: the result views the same elements,
+		// reinterpreted as `T::Canonical` (compatible with `T` by the contract
+		// of `Conjugate`, as in `conjugate_mut`) of the consumed `self`, so it
+		// holds the exclusive borrow of them for `'a`.
+		unsafe { self.into_const().canonical().const_cast() }
+	}
+
+	#[inline]
+	/// see [`MatRef::adjoint`]
+	pub fn adjoint_mut(
+		self,
+	) -> MatMut<'a, T::Conj, Cols, Rows, CStride, RStride>
+	where
+		T: Conjugate,
+	{
+		// SAFETY: as in `split_at_mut`: the result views the same elements,
+		// transposed and reinterpreted as `T::Conj` (compatible with `T` by the
+		// contract of `Conjugate`, as in `conjugate_mut`) of the consumed
+		// `self`, so it holds the exclusive borrow of them for `'a`.
+		unsafe { self.into_const().adjoint().const_cast() }
+	}
+
+	#[inline]
+	#[track_caller]
+	pub(crate) fn at_mut(self, row: Idx<Rows>, col: Idx<Cols>) -> &'a mut T {
+		assert!(all(row < self.nrows(), col < self.ncols()));
+		// SAFETY: the assert above checks `row < self.nrows()` and `col <
+		// self.ncols()`, the precondition of `at_mut_unchecked`.
+		unsafe { self.at_mut_unchecked(row, col) }
+	}
+
+	/// returns a mutable reference to the element at `(row, col)` without
+	/// bound checks
+	///
+	/// # Safety
+	/// `row < self.nrows()` and `col < self.ncols()`.
+	#[inline]
+	#[track_caller]
+	pub(crate) unsafe fn at_mut_unchecked(
+		self,
+		row: Idx<Rows>,
+		col: Idx<Cols>,
+	) -> &'a mut T {
+		// SAFETY: the caller guarantees `(row, col)` is in bounds (# Safety
+		// above), as `ptr_inbounds_at_mut` requires; by the view invariant the
+		// element is valid for reads and writes with no other live reference,
+		// and `self` is consumed, so the `&'a mut T` is the only reference to
+		// it for `'a`.
+		unsafe { &mut *self.ptr_inbounds_at_mut(row, col) }
+	}
+
+	#[inline]
+	/// see [`MatRef::reverse_rows`]
+	pub fn reverse_rows_mut(
+		self,
+	) -> MatMut<'a, T, Rows, Cols, RStride::Rev, CStride> {
+		// SAFETY: as in `split_at_mut`: the result views the same elements in
+		// reversed row order of the consumed `self`, so it holds the exclusive
+		// borrow of them for `'a`.
+		unsafe { self.into_const().reverse_rows().const_cast() }
+	}
+
+	#[inline]
+	/// see [`MatRef::reverse_cols`]
+	pub fn reverse_cols_mut(
+		self,
+	) -> MatMut<'a, T, Rows, Cols, RStride, CStride::Rev> {
+		// SAFETY: as in `split_at_mut`: the result views the same elements in
+		// reversed column order of the consumed `self`, so it holds the
+		// exclusive borrow of them for `'a`.
+		unsafe { self.into_const().reverse_cols().const_cast() }
+	}
+
+	#[inline]
+	/// see [`MatRef::reverse_rows_and_cols`]
+	pub fn reverse_rows_and_cols_mut(
+		self,
+	) -> MatMut<'a, T, Rows, Cols, RStride::Rev, CStride::Rev> {
+		// SAFETY: as in `split_at_mut`: the result views the same elements in
+		// reversed row and column order of the consumed `self`, so it holds the
+		// exclusive borrow of them for `'a`.
+		unsafe { self.into_const().reverse_rows_and_cols().const_cast() }
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::submatrix`]
+	pub fn submatrix_mut<V: Shape, H: Shape>(
+		self,
+		row_start: IdxInc<Rows>,
+		col_start: IdxInc<Cols>,
+		nrows: V,
+		ncols: H,
+	) -> MatMut<'a, T, V, H, RStride, CStride> {
+		// SAFETY: as in `split_at_mut`: the safe `MatRef::submatrix` checks its
+		// bounds and returns a view over a subset of the elements of the
+		// consumed `self`, so the result holds the exclusive borrow of them for
+		// `'a`.
+		unsafe {
+			self.into_const()
+				.submatrix(row_start, col_start, nrows, ncols)
+				.const_cast()
+		}
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::subrows`]
+	pub fn subrows_mut<V: Shape>(
+		self,
+		row_start: IdxInc<Rows>,
+		nrows: V,
+	) -> MatMut<'a, T, V, Cols, RStride, CStride> {
+		// SAFETY: as in `split_at_mut`: the safe `MatRef::subrows` checks its
+		// bounds and returns a view over a subset of the elements of the
+		// consumed `self`, so the result holds the exclusive borrow of them for
+		// `'a`.
+		unsafe { self.into_const().subrows(row_start, nrows).const_cast() }
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::subcols`]
+	pub fn subcols_mut<H: Shape>(
+		self,
+		col_start: IdxInc<Cols>,
+		ncols: H,
+	) -> MatMut<'a, T, Rows, H, RStride, CStride> {
+		// SAFETY: as in `split_at_mut`: the safe `MatRef::subcols` checks its
+		// bounds and returns a view over a subset of the elements of the
+		// consumed `self`, so the result holds the exclusive borrow of them for
+		// `'a`.
+		unsafe { self.into_const().subcols(col_start, ncols).const_cast() }
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::as_shape`]
+	pub fn as_shape_mut<V: Shape, H: Shape>(
+		self,
+		nrows: V,
+		ncols: H,
+	) -> MatMut<'a, T, V, H, RStride, CStride> {
+		// SAFETY: as in `split_at_mut`: `MatRef::as_shape` asserts that the new
+		// dimensions equal the old ones, so the result views the same elements
+		// of the consumed `self` and holds the exclusive borrow of them for
+		// `'a`.
+		unsafe { self.into_const().as_shape(nrows, ncols).const_cast() }
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::as_row_shape`]
+	pub fn as_row_shape_mut<V: Shape>(
+		self,
+		nrows: V,
+	) -> MatMut<'a, T, V, Cols, RStride, CStride> {
+		// SAFETY: as in `split_at_mut`: `MatRef::as_row_shape` asserts that the
+		// new dimensions equal the old ones, so the result views the same
+		// elements of the consumed `self` and holds the exclusive borrow of
+		// them for `'a`.
+		unsafe { self.into_const().as_row_shape(nrows).const_cast() }
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::as_col_shape`]
+	pub fn as_col_shape_mut<H: Shape>(
+		self,
+		ncols: H,
+	) -> MatMut<'a, T, Rows, H, RStride, CStride> {
+		// SAFETY: as in `split_at_mut`: `MatRef::as_col_shape` asserts that the
+		// new dimensions equal the old ones, so the result views the same
+		// elements of the consumed `self` and holds the exclusive borrow of
+		// them for `'a`.
+		unsafe { self.into_const().as_col_shape(ncols).const_cast() }
+	}
+
+	#[inline]
+	/// see [`MatRef::as_dyn_stride`]
+	pub fn as_dyn_stride_mut(self) -> MatMut<'a, T, Rows, Cols, isize, isize> {
+		// SAFETY: as in `split_at_mut`: the result views the same elements
+		// (only the stride types change) of the consumed `self`, so it holds
+		// the exclusive borrow of them for `'a`.
+		unsafe { self.into_const().as_dyn_stride().const_cast() }
+	}
+
+	#[inline]
+	/// see [`MatRef::as_dyn`]
+	pub fn as_dyn_mut(self) -> MatMut<'a, T, usize, usize, RStride, CStride> {
+		// SAFETY: as in `split_at_mut`: the result views the same elements
+		// (only the dimension types change) of the consumed `self`, so it holds
+		// the exclusive borrow of them for `'a`.
+		unsafe { self.into_const().as_dyn().const_cast() }
+	}
+
+	#[inline]
+	/// see [`MatRef::as_dyn_rows`]
+	pub fn as_dyn_rows_mut(
+		self,
+	) -> MatMut<'a, T, usize, Cols, RStride, CStride> {
+		// SAFETY: as in `split_at_mut`: the result views the same elements
+		// (only the row dimension type changes) of the consumed `self`, so it
+		// holds the exclusive borrow of them for `'a`.
+		unsafe { self.into_const().as_dyn_rows().const_cast() }
+	}
+
+	#[inline]
+	/// see [`MatRef::as_dyn_cols`]
+	pub fn as_dyn_cols_mut(
+		self,
+	) -> MatMut<'a, T, Rows, usize, RStride, CStride> {
+		// SAFETY: as in `split_at_mut`: the result views the same elements
+		// (only the column dimension type changes) of the consumed `self`, so
+		// it holds the exclusive borrow of them for `'a`.
+		unsafe { self.into_const().as_dyn_cols().const_cast() }
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::row`]
+	pub fn row_mut(self, i: Idx<Rows>) -> RowMut<'a, T, Cols, CStride> {
+		// SAFETY: as in `split_at_mut`: the safe `MatRef::row` checks its
+		// bounds and returns a view over a subset of the elements of the
+		// consumed `self`, so the result holds the exclusive borrow of them for
+		// `'a`.
+		unsafe { self.into_const().row(i).const_cast() }
+	}
+
+	#[inline]
+	#[track_caller]
+	/// see [`MatRef::col`]
+	pub fn col_mut(self, j: Idx<Cols>) -> ColMut<'a, T, Rows, RStride> {
+		// SAFETY: as in `split_at_mut`: the safe `MatRef::col` checks its
+		// bounds and returns a view over a subset of the elements of the
+		// consumed `self`, so the result holds the exclusive borrow of them for
+		// `'a`.
+		unsafe { self.into_const().col(j).const_cast() }
+	}
+
+	#[inline]
+	/// see [`MatRef::col_iter`]
+	pub fn col_iter_mut(
+		self,
+	) -> impl 'a
+	+ ExactSizeIterator
+	+ DoubleEndedIterator<Item = ColMut<'a, T, Rows, RStride>>
+	where
+		Rows: 'a,
+		Cols: 'a,
+	{
+		self.into_const()
+			.col_iter()
+			// SAFETY: as in `split_at_mut`: the iterator yields each column of
+			// the consumed `self` at most once (from either end), so the
+			// yielded views are disjoint and each holds the exclusive borrow of
+			// its elements for `'a`.
+			.map(|x| unsafe { x.const_cast() })
+	}
+
+	#[inline]
+	/// see [`MatRef::row_iter`]
+	pub fn row_iter_mut(
+		self,
+	) -> impl 'a
+	+ ExactSizeIterator
+	+ DoubleEndedIterator<Item = RowMut<'a, T, Cols, CStride>>
+	where
+		Rows: 'a,
+		Cols: 'a,
+	{
+		self.into_const()
+			.row_iter()
+			// SAFETY: as in `split_at_mut`: the iterator yields each row of the
+			// consumed `self` at most once (from either end), so the yielded
+			// views are disjoint and each holds the exclusive borrow of its
+			// elements for `'a`.
+			.map(|x| unsafe { x.const_cast() })
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	/// see [`MatRef::split_first_row`]
+	pub fn split_first_row_mut(
+		self,
+	) -> Option<(
+		RowMut<'a, T, Cols, CStride>,
+		MatMut<'a, T, usize, Cols, RStride, CStride>,
+	)> {
+		if let Some(i0) = self.nrows().idx_inc(1) {
+			let (head, tail) = self.split_at_row_mut(i0);
+			Some((head.row_mut(0), tail))
+		} else {
+			None
+		}
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	/// see [`MatRef::split_first_col`]
+	pub fn split_first_col_mut(
+		self,
+	) -> Option<(
+		ColMut<'a, T, Rows, RStride>,
+		MatMut<'a, T, Rows, usize, RStride, CStride>,
+	)> {
+		if let Some(i0) = self.ncols().idx_inc(1) {
+			let (head, tail) = self.split_at_col_mut(i0);
+			Some((head.col_mut(0), tail))
+		} else {
+			None
+		}
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	/// see [`MatRef::split_last_row`]
+	pub fn split_last_row_mut(
+		self,
+	) -> Option<(
+		RowMut<'a, T, Cols, CStride>,
+		MatMut<'a, T, usize, Cols, RStride, CStride>,
+	)> {
+		if self.nrows().unbound() > 0 {
+			let i0 = self.nrows().checked_idx_inc(self.nrows().unbound() - 1);
+			let (head, tail) = self.split_at_row_mut(i0);
+			Some((tail.row_mut(0), head))
+		} else {
+			None
+		}
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	/// see [`MatRef::split_last_col`]
+	pub fn split_last_col_mut(
+		self,
+	) -> Option<(
+		ColMut<'a, T, Rows, RStride>,
+		MatMut<'a, T, Rows, usize, RStride, CStride>,
+	)> {
+		if self.ncols().unbound() > 0 {
+			let i0 = self.ncols().checked_idx_inc(self.ncols().unbound() - 1);
+			let (head, tail) = self.split_at_col_mut(i0);
+			Some((tail.col_mut(0), head))
+		} else {
+			None
+		}
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	/// see [`MatRef::split_first_row`]
+	pub fn split_first_row(
+		self,
+	) -> Option<(
+		RowRef<'a, T, Cols, CStride>,
+		MatRef<'a, T, usize, Cols, RStride, CStride>,
+	)> {
+		self.into_const().split_first_row()
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	/// see [`MatRef::split_first_col`]
+	pub fn split_first_col(
+		self,
+	) -> Option<(
+		ColRef<'a, T, Rows, RStride>,
+		MatRef<'a, T, Rows, usize, RStride, CStride>,
+	)> {
+		self.into_const().split_first_col()
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	/// see [`MatRef::split_last_row`]
+	pub fn split_last_row(
+		self,
+	) -> Option<(
+		RowRef<'a, T, Cols, CStride>,
+		MatRef<'a, T, usize, Cols, RStride, CStride>,
+	)> {
+		self.into_const().split_last_row()
+	}
+
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[inline]
+	/// see [`MatRef::split_last_col`]
+	pub fn split_last_col(
+		self,
+	) -> Option<(
+		ColRef<'a, T, Rows, RStride>,
+		MatRef<'a, T, Rows, usize, RStride, CStride>,
+	)> {
+		self.into_const().split_last_col()
+	}
+
+	#[inline]
+	/// see [`MatRef::try_as_col_major`]
+	pub fn try_as_col_major_mut(
+		self,
+	) -> Option<MatMut<'a, T, Rows, Cols, ContiguousFwd, CStride>> {
+		self.into_const()
+			.try_as_col_major()
+			// SAFETY: as in `split_at_mut`: the result views the same elements
+			// (with the row stride checked to be 1) of the consumed `self`, so
+			// it holds the exclusive borrow of them for `'a`.
+			.map(|x| unsafe { x.const_cast() })
+	}
+
+	#[inline]
+	/// see [`MatRef::try_as_row_major`]
+	pub fn try_as_row_major_mut(
+		self,
+	) -> Option<MatMut<'a, T, Rows, Cols, RStride, ContiguousFwd>> {
+		self.into_const()
+			.try_as_row_major()
+			// SAFETY: as in `split_at_mut`: the result views the same elements
+			// (with the column stride checked to be 1) of the consumed `self`,
+			// so it holds the exclusive borrow of them for `'a`.
+			.map(|x| unsafe { x.const_cast() })
+	}
+
+	/// returns two views over the given columns
+	///
+	/// # panics
+	/// panics if `i0 == i1`
+	#[inline]
+	#[track_caller]
+	pub fn two_cols_mut(
+		self,
+		i0: Idx<Cols>,
+		i1: Idx<Cols>,
+	) -> (ColMut<'a, T, Rows, RStride>, ColMut<'a, T, Rows, RStride>) {
+		assert!(i0 != i1);
+		let this = self.into_const();
+		// SAFETY: the assert above checks `i0 != i1`; `col` checks each index
+		// is in bounds, and distinct columns of a mutable view have no element
+		// in common (the `from_raw_parts_mut` contract forbids self-aliasing),
+		// so the two views are disjoint. As in `split_at_mut`, `self` is
+		// consumed and its exclusive borrow for `'a` passes to them.
+		unsafe { (this.col(i0).const_cast(), this.col(i1).const_cast()) }
+	}
+
+	/// returns two views over the given rows
+	///
+	/// # panics
+	/// panics if `i0 == i1`
+	#[inline]
+	#[track_caller]
+	pub fn two_rows_mut(
+		self,
+		i0: Idx<Rows>,
+		i1: Idx<Rows>,
+	) -> (RowMut<'a, T, Cols, CStride>, RowMut<'a, T, Cols, CStride>) {
+		assert!(i0 != i1);
+		let this = self.into_const();
+		// SAFETY: the assert above checks `i0 != i1`; `row` checks each index
+		// is in bounds, and distinct rows of a mutable view have no element in
+		// common (the `from_raw_parts_mut` contract forbids self-aliasing), so
+		// the two views are disjoint. As in `split_at_mut`, `self` is consumed
+		// and its exclusive borrow for `'a` passes to them.
+		unsafe { (this.row(i0).const_cast(), this.row(i1).const_cast()) }
+	}
+
+	#[inline]
+	pub(crate) fn __at_mut(self, (i, j): (Idx<Rows>, Idx<Cols>)) -> &'a mut T {
+		self.at_mut(i, j)
+	}
+}
+impl<'a, T, Rows: Shape, Cols: Shape> MatMut<'a, T, Rows, Cols> {
+	/// creates a `MatMut` from slice views over the matrix data, and the matrix
+	/// dimensions. the data is interpreted in a column-major format, so that
+	/// the first chunk of `nrows` values from the slices goes in the first
+	/// column of the matrix, the second chunk of `nrows` values goes in the
+	/// second column, and so on
+	///
+	/// # panics
+	/// the function panics if any of the following conditions are violated:
+	/// * `nrows * ncols == slice.len()`
+	///
+	/// # example
+	/// ```
+	/// use colmat_core::{MatMut, mat};
+	/// let mut slice = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0_f64];
+	/// let view = MatMut::from_column_major_slice_mut(&mut slice, 3, 2);
+	/// let expected = mat![[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]];
+	/// assert_eq!(expected, view);
+	/// ```
+	#[inline]
+	#[track_caller]
+	pub fn from_column_major_slice_mut(
+		slice: &'a mut [T],
+		nrows: Rows,
+		ncols: Cols,
+	) -> Self
+	where
+		T: Sized,
+	{
+		from_slice_assert(nrows.unbound(), ncols.unbound(), slice.len());
+		// SAFETY: `from_slice_assert` checked `nrows * ncols == slice.len()`,
+		// so element `(i, j)` at offset `i + j * nrows` lies in the slice and
+		// distinct indices get distinct offsets; the slice pointer is non-null
+		// and aligned, and `slice` is borrowed mutably for `'a`.
+		unsafe {
+			Self::from_raw_parts_mut(
+				slice.as_mut_ptr(),
+				nrows,
+				ncols,
+				1,
+				nrows.unbound() as isize,
+			)
+		}
+	}
+
+	/// creates a `MatMut` from slice views over the matrix data, and the matrix
+	/// dimensions. the data is interpreted in a column-major format, where the
+	/// beginnings of two consecutive columns are separated by `col_stride`
+	/// elements.
+	#[inline]
+	#[track_caller]
+	pub fn from_column_major_slice_with_stride_mut(
+		slice: &'a mut [T],
+		nrows: Rows,
+		ncols: Cols,
+		col_stride: usize,
+	) -> Self
+	where
+		T: Sized,
+	{
+		from_strided_column_major_slice_mut_assert(
+			nrows.unbound(),
+			ncols.unbound(),
+			col_stride,
+			slice.len(),
+		);
+		// SAFETY: if the matrix is non-empty,
+		// `from_strided_column_major_slice_mut_assert` checked `col_stride >=
+		// nrows` and that the offset `(ncols - 1) * col_stride + nrows - 1` of
+		// the last element is below `slice.len()` without overflow, so element
+		// `(i, j)` at offset `i + j * col_stride` lies in the slice and
+		// distinct indices get distinct offsets; an empty matrix has no
+		// elements. The slice pointer is non-null and aligned, and `slice` is
+		// borrowed mutably for `'a`.
+		unsafe {
+			Self::from_raw_parts_mut(
+				slice.as_mut_ptr(),
+				nrows,
+				ncols,
+				1,
+				col_stride as isize,
+			)
+		}
+	}
+
+	/// creates a `MatMut` from slice views over the matrix data, and the matrix
+	/// dimensions. the data is interpreted in a row-major format, so that the
+	/// first chunk of `ncols` values from the slices goes in the first column
+	/// of the matrix, the second chunk of `ncols` values goes in the second
+	/// column, and so on
+	///
+	/// # panics
+	/// the function panics if any of the following conditions are violated:
+	/// * `nrows * ncols == slice.len()`
+	///
+	/// # example
+	/// ```
+	/// use colmat_core::{MatMut, mat};
+	/// let mut slice = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0_f64];
+	/// let view = MatMut::from_row_major_slice_mut(&mut slice, 3, 2);
+	/// let expected = mat![[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]];
+	/// assert_eq!(expected, view);
+	/// ```
+	#[inline]
+	#[track_caller]
+	pub fn from_row_major_slice_mut(
+		slice: &'a mut [T],
+		nrows: Rows,
+		ncols: Cols,
+	) -> Self
+	where
+		T: Sized,
+	{
+		MatMut::from_column_major_slice_mut(slice, ncols, nrows).transpose_mut()
+	}
+
+	/// creates a `MatMut` from slice views over the matrix data, and the matrix
+	/// dimensions. the data is interpreted in a row-major format, where the
+	/// beginnings of two consecutive rows are separated by `row_stride`
+	/// elements.
+	#[inline]
+	#[track_caller]
+	pub fn from_row_major_slice_with_stride_mut(
+		slice: &'a mut [T],
+		nrows: Rows,
+		ncols: Cols,
+		row_stride: usize,
+	) -> Self
+	where
+		T: Sized,
+	{
+		from_strided_row_major_slice_mut_assert(
+			nrows.unbound(),
+			ncols.unbound(),
+			row_stride,
+			slice.len(),
+		);
+		// SAFETY: if the matrix is non-empty,
+		// `from_strided_row_major_slice_mut_assert` checked `row_stride >=
+		// ncols` and that the offset `(nrows - 1) * row_stride + ncols - 1` of
+		// the last element is below `slice.len()` without overflow, so element
+		// `(i, j)` at offset `i * row_stride + j` lies in the slice and
+		// distinct indices get distinct offsets; an empty matrix has no
+		// elements. The slice pointer is non-null and aligned, and `slice` is
+		// borrowed mutably for `'a`.
+		unsafe {
+			Self::from_raw_parts_mut(
+				slice.as_mut_ptr(),
+				nrows,
+				ncols,
+				row_stride as isize,
+				1,
+			)
+		}
+	}
+}
+impl<'ROWS, 'COLS, 'a, T, RStride: Stride, CStride: Stride>
+	MatMut<'a, T, Dim<'ROWS>, Dim<'COLS>, RStride, CStride>
+{
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[doc(hidden)]
+	#[inline]
+	pub fn split_with_mut<'TOP, 'BOT, 'LEFT, 'RIGHT>(
+		self,
+		row: Partition<'TOP, 'BOT, 'ROWS>,
+		col: Partition<'LEFT, 'RIGHT, 'COLS>,
+	) -> (
+		MatMut<'a, T, Dim<'TOP>, Dim<'LEFT>, RStride, CStride>,
+		MatMut<'a, T, Dim<'TOP>, Dim<'RIGHT>, RStride, CStride>,
+		MatMut<'a, T, Dim<'BOT>, Dim<'LEFT>, RStride, CStride>,
+		MatMut<'a, T, Dim<'BOT>, Dim<'RIGHT>, RStride, CStride>,
+	) {
+		let (a, b, c, d) = self.split_at_mut(row.midpoint(), col.midpoint());
+		(
+			a.as_shape_mut(row.head, col.head),
+			b.as_shape_mut(row.head, col.tail),
+			c.as_shape_mut(row.tail, col.head),
+			d.as_shape_mut(row.tail, col.tail),
+		)
+	}
+}
+impl<'ROWS, 'a, T, Cols: Shape, RStride: Stride, CStride: Stride>
+	MatMut<'a, T, Dim<'ROWS>, Cols, RStride, CStride>
+{
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[doc(hidden)]
+	#[inline]
+	pub fn split_rows_with_mut<'TOP, 'BOT>(
+		self,
+		row: Partition<'TOP, 'BOT, 'ROWS>,
+	) -> (
+		MatMut<'a, T, Dim<'TOP>, Cols, RStride, CStride>,
+		MatMut<'a, T, Dim<'BOT>, Cols, RStride, CStride>,
+	) {
+		let (a, b) = self.split_at_row_mut(row.midpoint());
+		(a.as_row_shape_mut(row.head), b.as_row_shape_mut(row.tail))
+	}
+}
+impl<'COLS, 'a, T, Rows: Shape, RStride: Stride, CStride: Stride>
+	MatMut<'a, T, Rows, Dim<'COLS>, RStride, CStride>
+{
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[doc(hidden)]
+	#[inline]
+	pub fn split_cols_with_mut<'LEFT, 'RIGHT>(
+		self,
+		col: Partition<'LEFT, 'RIGHT, 'COLS>,
+	) -> (
+		MatMut<'a, T, Rows, Dim<'LEFT>, RStride, CStride>,
+		MatMut<'a, T, Rows, Dim<'RIGHT>, RStride, CStride>,
+	) {
+		let (a, b) = self.split_at_col_mut(col.midpoint());
+		(a.as_col_shape_mut(col.head), b.as_col_shape_mut(col.tail))
+	}
+}
+impl<'ROWS, 'COLS, 'a, T, RStride: Stride, CStride: Stride>
+	MatMut<'a, T, Dim<'ROWS>, Dim<'COLS>, RStride, CStride>
+{
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[doc(hidden)]
+	#[inline]
+	pub fn split_with<'TOP, 'BOT, 'LEFT, 'RIGHT>(
+		self,
+		row: Partition<'TOP, 'BOT, 'ROWS>,
+		col: Partition<'LEFT, 'RIGHT, 'COLS>,
+	) -> (
+		MatRef<'a, T, Dim<'TOP>, Dim<'LEFT>, RStride, CStride>,
+		MatRef<'a, T, Dim<'TOP>, Dim<'RIGHT>, RStride, CStride>,
+		MatRef<'a, T, Dim<'BOT>, Dim<'LEFT>, RStride, CStride>,
+		MatRef<'a, T, Dim<'BOT>, Dim<'RIGHT>, RStride, CStride>,
+	) {
+		let (a, b, c, d) = self.split_at(row.midpoint(), col.midpoint());
+		(
+			a.as_shape(row.head, col.head),
+			b.as_shape(row.head, col.tail),
+			c.as_shape(row.tail, col.head),
+			d.as_shape(row.tail, col.tail),
+		)
+	}
+}
+impl<'ROWS, 'a, T, Cols: Shape, RStride: Stride, CStride: Stride>
+	MatMut<'a, T, Dim<'ROWS>, Cols, RStride, CStride>
+{
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[doc(hidden)]
+	#[inline]
+	pub fn split_rows_with<'TOP, 'BOT>(
+		self,
+		row: Partition<'TOP, 'BOT, 'ROWS>,
+	) -> (
+		MatRef<'a, T, Dim<'TOP>, Cols, RStride, CStride>,
+		MatRef<'a, T, Dim<'BOT>, Cols, RStride, CStride>,
+	) {
+		let (a, b) = self.split_at_row(row.midpoint());
+		(a.as_row_shape(row.head), b.as_row_shape(row.tail))
+	}
+}
+impl<'COLS, 'a, T, Rows: Shape, RStride: Stride, CStride: Stride>
+	MatMut<'a, T, Rows, Dim<'COLS>, RStride, CStride>
+{
+	#[allow(clippy::type_complexity)] // faer signature shape, kept explicit to match upstream
+	#[doc(hidden)]
+	#[inline]
+	pub fn split_cols_with<'LEFT, 'RIGHT>(
+		self,
+		col: Partition<'LEFT, 'RIGHT, 'COLS>,
+	) -> (
+		MatRef<'a, T, Rows, Dim<'LEFT>, RStride, CStride>,
+		MatRef<'a, T, Rows, Dim<'RIGHT>, RStride, CStride>,
+	) {
+		let (a, b) = self.split_at_col(col.midpoint());
+		(a.as_col_shape(col.head), b.as_col_shape(col.tail))
+	}
+}
+impl<'a, T, Dim: Shape, RStride: Stride, CStride: Stride>
+	MatMut<'a, T, Dim, Dim, RStride, CStride>
+{
+	/// see [`MatRef::diagonal`]
+	#[inline]
+	pub fn diagonal(self) -> DiagRef<'a, T, Dim, isize> {
+		self.into_const().diagonal()
+	}
+}
+impl<'a, T, Dim: Shape, RStride: Stride, CStride: Stride>
+	MatMut<'a, T, Dim, Dim, RStride, CStride>
+{
+	/// see [`MatRef::diagonal`]
+	#[inline]
+	pub fn diagonal_mut(self) -> DiagMut<'a, T, Dim, isize> {
+		// SAFETY: as in `split_at_mut`: the diagonal elements `(i, i)`, `i <
+		// min(nrows, ncols)`, are distinct elements of the consumed `self`, so
+		// the result holds the exclusive borrow of them for `'a`.
+		unsafe {
+			self.into_const()
+				.diagonal()
+				.column_vector()
+				.const_cast()
+				.as_diagonal_mut()
+		}
+	}
+}
+impl<
+	'a,
+	T: core::fmt::Debug,
+	Rows: Shape,
+	Cols: Shape,
+	RStride: Stride,
+	CStride: Stride,
+> core::fmt::Debug for Mut<'a, T, Rows, Cols, RStride, CStride>
+{
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		self.rb().fmt(f)
+	}
+}
+impl<'a, T, Rows: Shape, Cols: Shape> MatMut<'a, T, Rows, Cols>
+where
+	T: RealField,
+{
+	/// see [MatRef::min]
+	pub fn min(self) -> Option<T> {
+		MatRef::internal_min(self.rb().as_dyn())
+	}
+
+	/// see [MatRef::min]
+	pub fn max(self) -> Option<T> {
+		MatRef::internal_max(self.rb().as_dyn())
+	}
+}
+#[track_caller]
+#[inline]
+fn from_strided_column_major_slice_mut_assert(
+	nrows: usize,
+	ncols: usize,
+	col_stride: usize,
+	len: usize,
+) {
+	if nrows > 0 && ncols > 0 {
+		let last = usize::checked_mul(col_stride, ncols - 1)
+			.and_then(|last_col| last_col.checked_add(nrows - 1));
+		let Some(last) = last else {
+			panic!("address computation of the last matrix element overflowed");
+		};
+		assert!(all(col_stride >= nrows, last < len));
+	}
+}
+#[track_caller]
+#[inline]
+fn from_strided_row_major_slice_mut_assert(
+	nrows: usize,
+	ncols: usize,
+	row_stride: usize,
+	len: usize,
+) {
+	if nrows > 0 && ncols > 0 {
+		let last = usize::checked_mul(row_stride, nrows - 1)
+			.and_then(|last_row| last_row.checked_add(ncols - 1));
+		let Some(last) = last else {
+			panic!("address computation of the last matrix element overflowed");
+		};
+		assert!(all(row_stride >= ncols, last < len));
+	}
+}
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn test_min() {
+		let mut m = mat![[1.0, 5.0, 3.0], [4.0, 2.0, 9.0], [7.0, 8.0, 6.0],];
+		assert_eq!(m.as_mut().min(), Some(1.0));
+		let mut empty: Mat<f64> = Mat::new();
+		assert_eq!(empty.as_mut().min(), None);
+	}
+	#[test]
+	fn test_max() {
+		let mut m = mat![[1.0, 5.0, 3.0], [4.0, 2.0, 9.0], [7.0, 8.0, 6.0],];
+		assert_eq!(m.as_mut().max(), Some(9.0));
+		let mut empty: Mat<f64> = Mat::new();
+		assert_eq!(empty.as_mut().max(), None);
+	}
+	#[test]
+	fn codeberg_305() {
+		const PAD: f64 = -42.0;
+		let mut slice = [0.0, 1.0, 2.0, PAD, 3.0, 4.0, 5.0, PAD, PAD, PAD];
+		{
+			let mut mat_view = MatMut::from_row_major_slice_with_stride_mut(
+				&mut slice, 2, 3, 4,
+			);
+			assert_eq!(mat![[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]], mat_view);
+			mat_view[(1, 2)] = 99.0;
+		}
+		assert_eq!(slice, [0.0, 1.0, 2.0, PAD, 3.0, 4.0, 99.0, PAD, PAD, PAD]);
+	}
+}

@@ -1,0 +1,28 @@
+[package]
+name = "colmat-core"
+version = "0.0.0"
+description = "Matrix views, element-wise iteration and layout copies for colmat-next (trial)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+colmat-traits = { path = "../colmat-traits", default-features = false }
+num-complex.workspace = true
+bytemuck.workspace = true
+dyn-stack.workspace = true
+equator.workspace = true
+generativity.workspace = true
+reborrow.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[features]
+default = ["std"]
+std = ["colmat-traits/std", "num-complex/std", "dyn-stack/std"]
+
+[lints]
+workspace = true

@@ -21,9 +21,11 @@
 //!
 //! Ported from colmat-rs (`faer-traits/src/lib.rs` at `71337cdc`), a fork of
 //! faer (<https://codeberg.org/sarah-quinones/faer>), and restructured as
-//! described above. faer is Copyright (c) 2026 sarah quiñones el kazdadi and
-//! is distributed under the MIT licence, whose text is in this crate's
-//! `LICENSE-faer`. Each module states what it ports.
+//! described above. faer is Copyright (c) 2026 sarah quiñones el kazdadi; the
+//! modifications in colmat-rs are Copyright (c) tensor4all contributors; both
+//! are distributed under the MIT licence, whose text is in this crate's
+//! `LICENSE-faer` (see also the repository's `NOTICE`). Each module states
+//! what it ports.
 //!
 //! [#2]: https://github.com/tensor4all/colmat-next-rs/issues/2
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -40,7 +42,7 @@ mod simd;
 mod test_support;
 
 pub use conjugate::{ComplexConj, Conjugate, Real};
-pub use index::{Index, IndexCore, SignedIndex};
+pub use index::{Index, IndexCore, Seal, SignedIndex};
 pub use num_complex::Complex;
 pub use ops::{
 	AddByRef, ByRef, DivByRef, MulByRef, NegByRef, RefOps, SubByRef, imply,

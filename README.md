@@ -10,10 +10,13 @@ the colmat maintainers. Until then, the design references are
 [`docs/design/next-generation-dense-linear-algebra.md`](https://github.com/tensor4all/tensor4all-meta/blob/main/docs/design/next-generation-dense-linear-algebra.md),
 and nothing in this repository overrides them.
 
-No crate is published from this repository. The workspace has one crate so far:
+No crate is published from this repository. The workspace has two crates so far:
 
 - [`colmat-traits`](crates/colmat-traits): the scalar contract (arithmetic and precision, S0) and
   optional SIMD providers (S1), proposed in this trial for #2 (#6).
+- [`colmat-core`](crates/colmat-core): matrix views (`Mat`, `Col`, `Row`, `Diag`, `Perm`), `zip!`
+  iteration and serial layout copies, ported from colmat-rs without rayon (#12). The parallel route,
+  workspace and kernels come in later steps of the design record (§7).
 
 ## Background
 
@@ -33,4 +36,4 @@ with status "design under review".
 
 MIT for now; see [`LICENSE`](LICENSE). This is a placeholder: the license choice belongs to the
 maintainers and has not been made. Code ported from colmat-rs or faer keeps its upstream notices; see
-[`REPOSITORY_RULES.md`](REPOSITORY_RULES.md).
+[`NOTICE`](NOTICE) and [`REPOSITORY_RULES.md`](REPOSITORY_RULES.md).
