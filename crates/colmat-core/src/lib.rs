@@ -407,7 +407,11 @@ pub mod utils;
 pub mod zip;
 
 #[cfg(all(test, feature = "std"))]
+mod exhaustive_tests;
+#[cfg(all(test, feature = "std"))]
 mod soundness_tests;
+#[cfg(all(test, feature = "std"))]
+mod test_support;
 #[cfg(test)]
 mod tests;
 

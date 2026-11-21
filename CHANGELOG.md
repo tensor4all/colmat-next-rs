@@ -22,6 +22,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- CI (#16): the nightly Miri run covers the doctests too and runs a second time under Tree Borrows.
+  `colmat-core` gains layout-exhaustive tests (`src/exhaustive_tests.rs`): every shape up to a small
+  size in 16 strided layouts, for the view reads, mutable splits and submatrices, the layout copies
+  and two-operand `zip!`, checking each element and the padding around the view.
+
 - `colmat-core` (#12): matrix views (`Mat`, `MatRef`, `MatMut`, `Col`, `Row`, `Diag`, `Perm`), `zip!`
   iteration and serial layout copies, ported from colmat-rs without rayon and without the `linalg`
   dependency. Every unsafe block carries a `// SAFETY:` comment; property tests check the views
