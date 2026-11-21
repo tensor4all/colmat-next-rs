@@ -1,8 +1,8 @@
 //! Ported from colmat-rs `faer/src/col/` (`mod.rs`, `colref.rs`, `colmut.rs`, `colown.rs`, `col_index.rs`) at `71337cdc`.
 //! Changed: the rayon iterators and the `linalg` reductions were removed; every unsafe block carries a `// SAFETY:` comment.
-//! Known defects inherited from colmat-rs are marked `TODO(review)` (see
-//! `docs/worklogs/2026-11-20-colmat-core-views-port.md`). faer's MIT notice:
-//! `LICENSE-faer`.
+//! The soundness defects inherited from colmat-rs (see
+//! `docs/worklogs/2026-11-20-colmat-core-views-port.md`) are fixed (#14).
+//! faer's MIT notice: `LICENSE-faer`.
 use crate::internal_prelude::*;
 use crate::utils::bound::{One, Zero};
 use core::ptr::NonNull;

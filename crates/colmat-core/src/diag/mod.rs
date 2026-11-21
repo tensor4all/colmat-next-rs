@@ -1,8 +1,8 @@
 //! Ported from colmat-rs `faer/src/diag/` (`mod.rs`, `diagref.rs`, `diagmut.rs`, `diagown.rs`) at `71337cdc`.
 //! Changed: nothing beyond the `SAFETY` comments; every unsafe block carries a `// SAFETY:` comment.
-//! Known defects inherited from colmat-rs are marked `TODO(review)` (see
-//! `docs/worklogs/2026-11-20-colmat-core-views-port.md`). faer's MIT notice:
-//! `LICENSE-faer`.
+//! The soundness defects inherited from colmat-rs (see
+//! `docs/worklogs/2026-11-20-colmat-core-views-port.md`) are fixed (#14).
+//! faer's MIT notice: `LICENSE-faer`.
 use crate::internal_prelude::*;
 pub(crate) mod diagmut;
 pub(crate) mod diagown;

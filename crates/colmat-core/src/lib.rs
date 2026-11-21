@@ -406,6 +406,8 @@ pub mod utils;
 /// element-wise iteration over several views of the same shape
 pub mod zip;
 
+#[cfg(all(test, feature = "std"))]
+mod soundness_tests;
 #[cfg(test)]
 mod tests;
 
@@ -447,6 +449,18 @@ pub type IdxInc<Dim, I = usize> = <Dim as ShapeIdx>::IdxInc<I>;
 /// either an index or a negative value
 pub type MaybeIdx<Dim, I = usize> = <Dim as ShapeIdx>::MaybeIdx<I>;
 
+/// Whether `Idx<N, I>` has the size and alignment of `I`. For the sealed
+/// shapes this holds exactly when it is `I` or a `#[repr(transparent)]`
+/// wrapper of it, which excludes [`One`](utils::bound::One) (its index is the
+/// zero-sized [`Zero`](utils::bound::Zero)). The slice casts between index
+/// types of different shapes check it.
+#[inline(always)]
+pub(crate) const fn idx_has_index_layout<N: ShapeIdx + ?Sized, I: Index>()
+-> bool {
+	core::mem::size_of::<Idx<N, I>>() == core::mem::size_of::<I>()
+		&& core::mem::align_of::<Idx<N, I>>() == core::mem::align_of::<I>()
+}
+
 /// base trait for [`Shape`]
 pub trait ShapeIdx {
 	/// type that can be used to index into a range
@@ -477,16 +491,31 @@ pub trait Shape:
 		utils::bound::Dim::new(self.unbound(), guard)
 	}
 	/// cast a slice of bound values to unbound values
+	///
+	/// # Panics
+	///
+	/// Panics if `Idx<Self, I>` does not have the layout of `I`: for
+	/// [`One`](utils::bound::One), whose index is the zero-sized
+	/// [`Zero`](utils::bound::Zero).
 	#[inline]
+	#[track_caller]
 	fn cast_idx_slice<I: Index>(slice: &[Idx<Self, I>]) -> &[I] {
-		// SAFETY: every `Idx<Self, I>` is `I` or a `#[repr(transparent)]`
-		// wrapper of `I` (`utils::bound`), so the slice has the same layout.
+		core::assert!(
+			idx_has_index_layout::<Self, I>(),
+			"this shape's index is not stored as `I`"
+		);
+		// SAFETY: `Shape` is sealed, and every `Idx<Self, I>` is `I`, a
+		// `#[repr(transparent)]` wrapper of `I` (`utils::bound`), or the
+		// zero-sized `Zero`, which the assertion above excludes; so the slice
+		// has the layout of `[I]` with the same length.
 		unsafe { core::slice::from_raw_parts(slice.as_ptr() as _, slice.len()) }
 	}
 	/// cast a slice of bound values to unbound values
 	#[inline]
 	fn cast_idx_inc_slice<I: Index>(slice: &[IdxInc<Self, I>]) -> &[I] {
-		// SAFETY: as in `cast_idx_slice`, for `IdxInc`.
+		// SAFETY: `Shape` is sealed, and every `IdxInc<Self, I>` is `I` or a
+		// `#[repr(transparent)]` wrapper of `I` (`utils::bound`, including
+		// `IdxIncOne`), so the slice has the layout of `[I]`.
 		unsafe { core::slice::from_raw_parts(slice.as_ptr() as _, slice.len()) }
 	}
 	/// returns the index `0`, which is always valid

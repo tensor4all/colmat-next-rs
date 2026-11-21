@@ -12,16 +12,21 @@ All notable changes are recorded here. The format follows
 - `colmat-traits` (#10): complex `sqrt` no longer loses the smaller component when `|im| ≪ |re|`
   (Kahan's method), and complex `recip` no longer flushes to zero for `|z|` near the overflow
   threshold. Both defects were inherited from colmat-rs.
+- `colmat-core` (#14): the soundness defects inherited from colmat-rs and recorded in #12.
+  `Mat::resize_with` and `Mat::truncate` drop each element once when a closure or a `drop` panics;
+  the triangular `zip!` iterations stay in bounds for every shape and layout, and the upper
+  triangle of a wide matrix with reversed rows no longer skips the columns `j >= nrows`; casts
+  between permutation shapes panic for `One` instead of reinterpreting its zero-sized index;
+  `Array`'s range indexing is checked. API changes: `ZipEq::new_unchecked` is an `unsafe fn`, and
+  `Array::as_mut` returns a slice borrowed from the array.
 
 ### Added
 
 - `colmat-core` (#12): matrix views (`Mat`, `MatRef`, `MatMut`, `Col`, `Row`, `Diag`, `Perm`), `zip!`
   iteration and serial layout copies, ported from colmat-rs without rayon and without the `linalg`
   dependency. Every unsafe block carries a `// SAFETY:` comment; property tests check the views
-  against a reference offset model. The review found soundness defects inherited from colmat-rs
-  (panic safety of `Mat` growth and truncation, `Perm` with shape `One`, a triangular `zip!` arm,
-  `ZipEq::new_unchecked`, two `Array` methods); they are recorded in
-  `docs/worklogs/2026-11-20-colmat-core-views-port.md` and not yet fixed.
+  against a reference offset model. The review found soundness defects inherited from colmat-rs,
+  recorded in `docs/worklogs/2026-11-20-colmat-core-views-port.md` and fixed in #14.
 - `NOTICE`: the provenance and licence of the code ported from colmat-rs and faer.
 
 - Repository scaffolding: agent and contribution rules, CI, and the design-record layout.

@@ -56,15 +56,16 @@ impl<'a, I: Index, N: Shape> PermRef<'a, I, N> {
 	#[inline]
 	pub fn as_shape<M: Shape>(self, dim: M) -> PermRef<'a, I, M> {
 		assert!(self.len().unbound() == dim.unbound());
+		core::assert!(
+			crate::idx_has_index_layout::<N, I>()
+				&& crate::idx_has_index_layout::<M, I>(),
+			"`as_shape` between shapes whose indices are not stored as `I`"
+		);
 		// SAFETY: both slices have length `dim` (checked above) and are
 		// borrowed for `'a`; `N::Idx<I>` and `M::Idx<I>` both have the layout
-		// of `I`, and every entry is `< dim` by the permutation invariant, so
-		// the entries are valid `M::Idx<I>` and the invariant holds for shape
-		// `M`.
-		// TODO(review): the layout claim fails when `N` is `One`
-		// (`One::Idx<I>` is the zero-sized `Zero`): a `PermRef<'_, I, One>`
-		// built by `new_unchecked` over real `&[Zero]` slices, then
-		// `as_shape(1usize)`, reads an `I` from a zero-sized allocation.
+		// of `I` (checked above: neither shape is `One`), and every entry is
+		// `< dim` by the permutation invariant, so the entries are valid
+		// `M::Idx<I>` and the invariant holds for shape `M`.
 		unsafe {
 			PermRef {
 				0: Ref {

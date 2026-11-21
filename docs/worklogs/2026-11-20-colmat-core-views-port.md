@@ -69,7 +69,34 @@ Also marked, not reachable as UB in the cases tried:
 - `utils/bound.rs`: the `<= I::Signed::MAX` clause of the `Idx`/`IdxInc` invariant is not enforced
   by `Dim::new`/`Dim::with`; no unsafe code was found that depends on it.
 
-These are left as `TODO(review)` comments in this port; their handling is decided separately.
+These were left as `TODO(review)` comments in the port (#13) and are fixed in #14 (below).
+
+## Fixes (#14)
+
+All seven also reproduce under Miri against colmat-rs `b376b3ce` (its `main` on 2026-11-21), with
+the same probes; reported as tensor4all/colmat-rs#254 (#1, #2), #255 (#4, #5) and #256 (#3, #6, #7).
+
+| # | Fix | Regression test (`src/soundness_tests.rs`) |
+|---|---|---|
+| 1 | The guards of `noalias_annotate` and `init_with` start at row `old_nrows`; in `noalias_annotate` the guard and the writes share one pointer taken from the column slice once (taking it again per row, as before, invalidates the guard's pointer under Stacked Borrows, which Miri reported once the guard covered the right rows) | `resize_with_drops_each_element_once_when_f_panics`: four growth shapes, `f` panicking at every call |
+| 2 | `DropMat` moves to the next column before dropping the current one; `truncate` shrinks the dimensions before the drop | `truncate_drops_each_element_once_when_a_drop_panics`: every removed element panicking in turn |
+| 3 | `Shape::cast_idx_slice`, `PermRef::as_shape` and `Perm::into_shape` assert that the index of each shape has the layout of `I` (`idx_has_index_layout`), which fails only for `One`; `IdxIncOne` and `MaybeIdxOne` are `repr(transparent)`, so `cast_idx_inc_slice` holds for every shape | `permutations_of_shape_one_panic_instead_of_casting_zero_sized_indices` |
+| 4 | The triangular arms clamp `j + strict` to `m` (`None`/`Transpose` start, `TransposeReverseRows` end), which also removes the two contract-only cases listed above | `triangular_iterations_visit_exactly_the_triangle_in_every_layout`: shapes up to `6 x 6` (`4 x 4` under Miri), 16 layouts, both triangles, with and without the diagonal, with and without indices, against the set of indices in the triangle |
+| 5 | `ZipEq::new_unchecked` is an `unsafe fn` with a `# Safety` section | the compiler (a safe call no longer builds); `zip_eq_new_unchecked_with_matching_shapes_visits_every_pair` for the valid use |
+| 6 | `Array::as_mut(&mut self) -> &mut [T]` | the compiler (two live results no longer build); `array_ranges_are_checked_and_as_mut_borrows_the_array` |
+| 7 | `Array`'s range `Index`/`IndexMut` use checked slicing in every build | `array_ranges_are_checked_and_as_mut_borrows_the_array` |
+
+The triangular test also found a wrong result, not UB, in the upper-triangle `ReverseRows` arm: it
+iterated columns `0..min(m, n)`, so for a wide matrix whose preferred layout reverses the rows the
+columns `j >= m` were skipped (a `2 x 3` view with row stride `-1`: 3 of the 5 upper elements).
+colmat-rs `b376b3ce` gives the same 3 elements. The arm now iterates `0..n`.
+
+Run against the code before the fixes (`origin/main` `04ba305` with the new test file), tests 1-4
+fail (double drops, an overflow in the triangular arm, the zero-sized read); the `Array` range test
+passes there because `--profile ci` keeps debug assertions on, and #5 and #6 are type changes.
+
+Still open: the `<= I::Signed::MAX` clause of the `Idx`/`IdxInc` invariant (above), marked
+`TODO(review)` in `utils/bound.rs`.
 
 ## Tests
 
