@@ -4,6 +4,7 @@
 
 use crate::internal_prelude::*;
 use crate::perm::{Perm, PermRef};
+use crate::test_support::{Strided, layouts};
 use crate::utils::bound::{Array, Dim, One, Zero};
 use crate::zip::Diag;
 use std::assert;
@@ -167,22 +168,6 @@ fn truncate_drops_each_element_once_when_a_drop_panics() {
 	}
 }
 
-/// The strides of the layouts the triangular tests visit: column-major and
-/// row-major, with unit or doubled inner stride, each axis forward or
-/// reversed.
-fn layouts(m: usize, n: usize) -> Vec<(isize, isize)> {
-	let mut out = Vec::new();
-	for inner in [1isize, 2] {
-		for s1 in [1isize, -1] {
-			for s2 in [1isize, -1] {
-				out.push((s1 * inner, s2 * inner * m.max(1) as isize));
-				out.push((s2 * inner * n.max(1) as isize, s1 * inner));
-			}
-		}
-	}
-	out
-}
-
 /// Runs `body` on an `m x n` view with strides `(rs, cs)` whose element
 /// `(i, j)` holds `i * 16 + j`.
 fn with_view(
@@ -192,25 +177,9 @@ fn with_view(
 	cs: isize,
 	body: impl FnOnce(MatMut<'_, u32>),
 ) {
-	let span = |len: usize, s: isize| (len.max(1) - 1) as isize * s;
-	let lo = span(m, rs).min(0) + span(n, cs).min(0);
-	let hi = span(m, rs).max(0) + span(n, cs).max(0);
-	let mut buf = vec![u32::MAX; (hi - lo + 1) as usize];
-	let base = (-lo) as usize;
-	for i in 0..m {
-		for j in 0..n {
-			buf[(base as isize + i as isize * rs + j as isize * cs) as usize] =
-				(i * 16 + j) as u32;
-		}
-	}
-	// SAFETY: `buf` holds every offset `base + i * rs + j * cs` for `i < m`,
-	// `j < n` (`lo` and `hi` are its extremes), the layouts of `layouts` map
-	// distinct `(i, j)` to distinct offsets, and the view borrows `buf`
-	// mutably for its lifetime.
-	let view = unsafe {
-		MatMut::from_raw_parts_mut(buf.as_mut_ptr().add(base), m, n, rs, cs)
-	};
-	body(view);
+	let mut s =
+		Strided::new(m, n, (rs, cs), u32::MAX, |i, j| (i * 16 + j) as u32);
+	body(s.view_mut());
 }
 
 #[test]
