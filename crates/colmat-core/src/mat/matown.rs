@@ -26,20 +26,19 @@ unsafe fn noalias_annotate<T, Rows: Shape, Cols: Shape>(
 ) {
 	// SAFETY: the caller upholds this function's contract (# Safety above):
 	// every `i` in `old_nrows..new_nrows` is `< iter.len()`, so `add(i)` stays
-	// in `iter` and the write goes to an uninitialised slot.
-	// TODO(review): if `f` panics, `guard` drops rows `0..k` instead of the `k`
-	// rows written at `old_nrows..`; with `old_nrows > 0` that drops
-	// initialised rows still owned by the `Mat` (double drop) and leaks the new
-	// ones. Reached from `Mat::resize_with` growing rows with a panicking `f`.
+	// in `iter` and the write goes to an uninitialised slot. `guard` starts at
+	// row `old_nrows` and counts the rows written so far, so if `f` panics it
+	// drops exactly those (the `DropCol` contract), none the caller owns. The
+	// guard and the writes share one pointer taken from `iter`, so no later
+	// reborrow of `iter` invalidates the guard's pointer.
 	unsafe {
-		let ptr = iter.as_mut_ptr();
+		let base = iter.as_mut_ptr() as *mut T;
 		let mut guard = DropCol {
-			ptr: ptr as *mut T,
+			ptr: base.add(old_nrows.unbound()),
 			nrows: 0,
 		};
 		for i in Rows::indices(old_nrows, new_nrows) {
-			let ptr = iter.as_mut_ptr().add(i.unbound()) as *mut T;
-			ptr.write((*f)(i, j));
+			base.add(i.unbound()).write((*f)(i, j));
 			guard.nrows += 1;
 		}
 		core::mem::forget(guard);
@@ -325,9 +324,6 @@ impl<T> Drop for DropCol<T> {
 			// SAFETY: by the construction contract of `DropCol` (above the
 			// struct), `ptr` points to `nrows` contiguous initialised `T`s that
 			// only this guard drops.
-			// TODO(review): the callers do not always uphold it: see the
-			// `TODO(review)` notes in `noalias_annotate`, `DropMat::drop` and
-			// `truncate`.
 			unsafe {
 				let slice =
 					core::slice::from_raw_parts_mut(self.ptr, self.nrows);
@@ -342,17 +338,16 @@ impl<T> Drop for DropMat<T> {
 		if const { core::mem::needs_drop::<T>() } {
 			let mut ptr = self.ptr;
 			if self.nrows > 0 {
-				// TODO(review): if dropping a column panics, `ptr` is not
-				// advanced, so `DropIter` retries the same column (double drop)
-				// and never drops the last one. Concrete input: a 1x3 `Mat`
-				// whose element `(0, 1)` panics on its first drop, then
-				// `truncate(1, 1)`: drop order is [1, 1, 0, 1, 2].
+				// `ptr` moves to the next column before the current one is
+				// dropped, so if that drop panics, `DropIter` resumes at the
+				// next column instead of dropping the same one again.
 				DropIter((0..self.ncols).map(|_| {
-					DropCol {
+					let col = DropCol {
 						ptr,
 						nrows: self.nrows,
 					};
 					ptr = ptr.wrapping_byte_add(self.byte_col_stride);
+					drop(col);
 				}));
 			}
 		}
@@ -426,15 +421,14 @@ impl<T, Rows: Shape, Cols: Shape> Mat<T, Rows, Cols> {
 		// column `j < new_ncols` starts at `ptr + j * row_capacity` and has
 		// room for `new_nrows` elements, so the `MaybeUninit` slice of each
 		// column is inside the allocation, and `noalias_annotate` writes only
-		// its uninitialised rows `old_nrows..new_nrows`.
-		// TODO(review): `col_guard` starts at row 0, not `old_nrows`, so after
-		// a panic in `f` it drops the wrong rows when `old_nrows > 0` (see
-		// `noalias_annotate`).
+		// its uninitialised rows `old_nrows..new_nrows`. `col_guard` covers
+		// rows `old_nrows..new_nrows` of the columns completed so far, so if
+		// `f` panics it drops exactly the elements written by this call.
 		unsafe {
 			let stride = row_capacity;
 			let mut ptr = ptr.wrapping_add(stride * old_ncols.unbound());
 			let mut col_guard = DropMat {
-				ptr,
+				ptr: ptr.wrapping_add(old_nrows.unbound()),
 				nrows: new_nrows.unbound() - old_nrows.unbound(),
 				ncols: 0,
 				byte_col_stride: stride * core::mem::size_of::<T>(),
@@ -576,9 +570,9 @@ impl<T, Rows: Shape, Cols: Shape> Mat<T, Rows, Cols> {
 		// outside `0..nrows x 0..ncols` is uninitialised. The first `init_with`
 		// fills rows `nrows..new_nrows` of the existing columns, the second
 		// fills every row of the new columns `ncols..new_ncols`, and each
-		// dimension is updated right after, so the invariant holds again.
-		// TODO(review): a panic in `f` while growing rows double-drops (see
-		// `noalias_annotate`).
+		// dimension is updated right after, so the invariant holds again. If
+		// `f` panics, `init_with` drops what it wrote and the dimensions still
+		// describe the elements the matrix owns.
 		unsafe {
 			let this = &mut *self;
 			if new_nrows == this.0.nrows && new_ncols == this.0.ncols {
@@ -625,12 +619,12 @@ impl<T, Rows: Shape, Cols: Shape> Mat<T, Rows, Cols> {
 	/// - `new_nrows > self.nrows()`
 	/// - `new_ncols > self.ncols()`
 	pub fn truncate(&mut self, new_nrows: Rows, new_ncols: Cols) {
-		// TODO(review): the dimensions are updated after the `DropMat` runs, so
-		// if an element's `drop` panics, the `Mat` still owns the dropped
-		// elements and drops them again (see `DropMat::drop`).
+		// Each dimension is reduced before the removed elements are dropped, so
+		// if an element's `drop` panics, the `Mat` no longer owns any of them
+		// (the `DropMat` still drops the rest while unwinding).
 		if new_ncols < self.0.ncols {
 			let stride = self.0.raw.row_capacity;
-			drop(DropMat {
+			let tail = DropMat {
 				ptr: self
 					.0
 					.raw
@@ -640,19 +634,21 @@ impl<T, Rows: Shape, Cols: Shape> Mat<T, Rows, Cols> {
 				nrows: self.0.nrows.unbound(),
 				ncols: self.0.ncols.unbound() - new_ncols.unbound(),
 				byte_col_stride: stride * core::mem::size_of::<T>(),
-			});
+			};
 			self.0.ncols = new_ncols;
+			drop(tail);
 		}
 		if new_nrows < self.0.nrows {
 			let size = core::mem::size_of::<T>();
 			let stride = size * self.0.raw.row_capacity;
-			drop(DropMat {
+			let tail = DropMat {
 				ptr: self.0.raw.ptr.as_ptr().wrapping_add(new_nrows.unbound()),
 				nrows: self.0.nrows.unbound() - new_nrows.unbound(),
 				ncols: self.0.ncols.unbound(),
 				byte_col_stride: stride,
-			});
+			};
 			self.0.nrows = new_nrows;
+			drop(tail);
 		}
 	}
 

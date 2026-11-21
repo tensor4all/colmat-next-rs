@@ -1,7 +1,8 @@
 //! Ported from colmat-rs `faer/src/linalg/zip.rs` at `71337cdc`.
-//! Changed: moved from `linalg::zip` to `zip`; nothing else beyond the `SAFETY` comments; every unsafe block carries a `// SAFETY:` comment.
-//! Known defects inherited from colmat-rs are marked `TODO(review)` (see
-//! `docs/worklogs/2026-11-20-colmat-core-views-port.md`). faer's MIT notice:
+//! Changed: moved from `linalg::zip` to `zip`; every unsafe block carries a
+//! `// SAFETY:` comment; `ZipEq::new_unchecked` is an `unsafe fn`, and the
+//! triangular iterations clamp the row range of columns outside the triangle
+//! (#14; reported as tensor4all/colmat-rs#255). faer's MIT notice:
 //! `LICENSE-faer`.
 #![allow(missing_docs)]
 use crate::col::{Col, ColMut, ColRef};
@@ -474,15 +475,16 @@ impl<
 	}
 
 	/// creates a zip matrix, assuming that the dimensions match
-	// TODO(review): this is a safe function, but the unsafe iteration code
-	// (`for_each*`, `map*`) relies on the operands having equal dimensions,
-	// which is only `debug_assert!`ed here. In builds without debug
-	// assertions, `ZipEq::new_unchecked(zip!(&mut a), zip!(&mut b))
-	// .for_each(..)` with `a` 64x64 and `b` 1x1 reads `b` out of bounds
-	// (reproduced in release). It probably should be an `unsafe fn`.
+	///
+	/// # Safety
+	///
+	/// `head` and `tail` must have the same number of rows and the same
+	/// number of columns: the iteration (`for_each*`, `map*`) indexes both
+	/// with the dimensions of `head` without checking them. This is checked
+	/// only with debug assertions; [`ZipEq::new`] always checks it.
 	#[inline(always)]
 	#[track_caller]
-	pub fn new_unchecked(head: Head, tail: Tail) -> Self {
+	pub unsafe fn new_unchecked(head: Head, tail: Tail) -> Self {
 		debug_assert!(all(
 			Head::nrows(&head) == Tail::nrows(&tail),
 			Head::ncols(&head) == Tail::ncols(&tail),
@@ -616,7 +618,7 @@ where
 	) -> <Self::Slice as SliceFamily<'a, Self::Item>>::Slice {
 		// SAFETY: the caller upholds `get_slice_unchecked`'s contract for the
 		// zip. Both operands have the same dimensions (asserted by
-		// `ZipEq::new`; see the TODO(review) on `ZipEq::new_unchecked`) and the
+		// `ZipEq::new`, guaranteed by the caller of `ZipEq::new_unchecked`) and the
 		// same index type, and the zip is contiguous only if both are, so the
 		// same `idx` and `n_elems` satisfy the contract for each operand; the
 		// two calls borrow disjoint fields of `this`.
@@ -1689,8 +1691,8 @@ where
 		return;
 	}
 	// SAFETY: `(m, n)` are the dimensions of `z`, which are those of every
-	// zipped operand (`ZipEq::new` asserts they match; see the TODO(review) on
-	// `ZipEq::new_unchecked`), so every `(i, j)` with `i < m`, `j < n` is in
+	// zipped operand (`ZipEq::new` asserts they match, and
+	// `ZipEq::new_unchecked`'s caller guarantees it), so every `(i, j)` with `i < m`, `j < n` is in
 	// bounds. The contiguous branch takes, for each column, the slice of all
 	// `m` rows from row 0 (row stride 1, checked by `is_contiguous`); each
 	// element is handed out exactly once.
@@ -1740,8 +1742,8 @@ fn for_each_mat_with_index<
 	}
 	match layout {
 		// SAFETY: `(m, n)` are the dimensions of `z`, which are those of every
-		// zipped operand (`ZipEq::new` asserts they match; see the TODO(review)
-		// on `ZipEq::new_unchecked`), so every `(i, j)` with `i < m`, `j < n`
+		// zipped operand (`ZipEq::new` asserts they match, and
+		// `ZipEq::new_unchecked`'s caller guarantees it), so every `(i, j)` with `i < m`, `j < n`
 		// is in bounds. The contiguous branch takes, for each column, the slice
 		// of all `m` rows from row 0 (row stride 1, checked by
 		// `is_contiguous`); each element is handed out exactly once.
@@ -1768,8 +1770,8 @@ fn for_each_mat_with_index<
 			}
 		},
 		// SAFETY: `(m, n)` are the dimensions of `z`, which are those of every
-		// zipped operand (`ZipEq::new` asserts they match; see the TODO(review)
-		// on `ZipEq::new_unchecked`), so every `(i, j)` with `i < m`, `j < n`
+		// zipped operand (`ZipEq::new` asserts they match, and
+		// `ZipEq::new_unchecked`'s caller guarantees it), so every `(i, j)` with `i < m`, `j < n`
 		// is in bounds. The contiguous branch takes, for each column, the slice
 		// of all `m` rows from row 0 (row stride 1, checked by
 		// `is_contiguous`); each element is handed out exactly once.
@@ -1796,8 +1798,8 @@ fn for_each_mat_with_index<
 			}
 		},
 		// SAFETY: `(m, n)` are the dimensions of `z`, which are those of every
-		// zipped operand (`ZipEq::new` asserts they match; see the TODO(review)
-		// on `ZipEq::new_unchecked`), so every `(i, j)` with `i < m`, `j < n`
+		// zipped operand (`ZipEq::new` asserts they match, and
+		// `ZipEq::new_unchecked`'s caller guarantees it), so every `(i, j)` with `i < m`, `j < n`
 		// is in bounds. The contiguous branch takes, for each column, the slice
 		// of all `m` rows from row 0 (row stride 1, checked by
 		// `is_contiguous`); each element is handed out exactly once.
@@ -1824,8 +1826,8 @@ fn for_each_mat_with_index<
 			}
 		},
 		// SAFETY: `(m, n)` are the dimensions of `z`, which are those of every
-		// zipped operand (`ZipEq::new` asserts they match; see the TODO(review)
-		// on `ZipEq::new_unchecked`), so every `(i, j)` with `i < m`, `j < n`
+		// zipped operand (`ZipEq::new` asserts they match, and
+		// `ZipEq::new_unchecked`'s caller guarantees it), so every `(i, j)` with `i < m`, `j < n`
 		// is in bounds. The contiguous branch takes, for each column, the slice
 		// of all `m` rows from row 0 (row stride 1, checked by
 		// `is_contiguous`); each element is handed out exactly once.
@@ -1884,25 +1886,19 @@ fn for_each_mat_triangular_lower_with_index<
 		return;
 	}
 	match layout {
-		// SAFETY: TODO(review): for `n > m + 1 - strict` (a wide matrix; for
-		// the upper triangle under `Transpose`, a tall one) some columns have
-		// `start = j + strict > end = m`. `start == end` does not catch it: the
-		// non-contiguous loop is empty, but the contiguous branch calls
-		// `get_slice_unchecked` at row `start >= m` with length `end - start`,
-		// which wraps to nearly `usize::MAX` in builds without overflow checks,
-		// violating its contract (no element is read, as the index range is
-		// empty). Otherwise `(m, n)` are the dimensions of `z`, which are those
-		// of every zipped operand (see `ZipEq::new`). In column `j`, `start = j
-		// + strict <= end = m` when the TODO above does not apply, so each `(i,
-		// j)` with `start <= i < end` is in bounds and the contiguous branch
-		// (row stride 1, checked by `is_contiguous`) slices `end - start` rows
-		// from `(start, j)`; `from_dyn_idx` receives the index with the layout
-		// transform undone, which is a valid index of `Z`; each element is
-		// handed out once.
+		// SAFETY: `(m, n)` are the dimensions of `z`, which are those of every
+		// zipped operand (see `ZipEq::new`). In column `j`, `start = min(j +
+		// strict, m) <= end = m` (the clamp covers the columns of a wide
+		// matrix, or for the upper triangle under `Transpose` a tall one, that
+		// have no element in the triangle), so each `(i, j)` with `start <= i <
+		// end` is in bounds and the contiguous branch (row stride 1, checked by
+		// `is_contiguous`) slices `end - start` rows from `(start, j)`;
+		// `from_dyn_idx` receives the index with the layout transform undone,
+		// which is a valid index of `Z`; each element is handed out once.
 		MatLayoutTransform::None => unsafe {
 			if Z::Dyn::is_contiguous(&z) {
 				for j in 0..n {
-					let start = j + strict;
+					let start = Ord::min(j + strict, m);
 					let end = m;
 					if start == end {
 						continue;
@@ -1921,7 +1917,7 @@ fn for_each_mat_triangular_lower_with_index<
 				}
 			} else {
 				for j in 0..n {
-					let start = j + strict;
+					let start = Ord::min(j + strict, m);
 					let end = m;
 					if start == end {
 						continue;
@@ -2132,8 +2128,9 @@ fn for_each_mat_triangular_upper_with_index<
 			}
 		},
 		// SAFETY: `(m, n)` are the dimensions of `z`, which are those of every
-		// zipped operand (see `ZipEq::new`). In column `j`, `j < min(m, n)` and
-		// `start = m - min(j + 1 - strict, m)` lies in `[0, m]`, so each `(i,
+		// zipped operand (see `ZipEq::new`). In column `j < n`, `start = m -
+		// min(j + 1 - strict, m)` lies in `[0, m]` (every column of a wide
+		// matrix has rows in the upper triangle), so each `(i,
 		// j)` with `start <= i < end` is in bounds and the contiguous branch
 		// (row stride 1, checked by `is_contiguous`) slices `end - start` rows
 		// from `(start, j)`; `from_dyn_idx` receives the index with the layout
@@ -2141,7 +2138,7 @@ fn for_each_mat_triangular_upper_with_index<
 		// handed out once.
 		MatLayoutTransform::ReverseRows => unsafe {
 			if Z::Dyn::is_contiguous(&z) {
-				for j in 0..Ord::min(m, n) {
+				for j in 0..n {
 					let start = m - Ord::min(j + (1 - strict), m);
 					let end = m;
 					if start == end {
@@ -2160,7 +2157,7 @@ fn for_each_mat_triangular_upper_with_index<
 					);
 				}
 			} else {
-				for j in 0..Ord::min(m, n) {
+				for j in 0..n {
 					let start = m - Ord::min(j + (1 - strict), m);
 					let end = m;
 					if start == end {
@@ -2173,25 +2170,19 @@ fn for_each_mat_triangular_upper_with_index<
 				}
 			}
 		},
-		// SAFETY: TODO(review): for `n > m + 1 - strict` (a wide matrix; for
-		// the upper triangle under `Transpose`, a tall one) some columns have
-		// `start = j + strict > end = m`. `start == end` does not catch it: the
-		// non-contiguous loop is empty, but the contiguous branch calls
-		// `get_slice_unchecked` at row `start >= m` with length `end - start`,
-		// which wraps to nearly `usize::MAX` in builds without overflow checks,
-		// violating its contract (no element is read, as the index range is
-		// empty). Otherwise `(m, n)` are the dimensions of `z`, which are those
-		// of every zipped operand (see `ZipEq::new`). In column `j`, `start = j
-		// + strict <= end = m` when the TODO above does not apply, so each `(i,
-		// j)` with `start <= i < end` is in bounds and the contiguous branch
-		// (row stride 1, checked by `is_contiguous`) slices `end - start` rows
-		// from `(start, j)`; `from_dyn_idx` receives the index with the layout
-		// transform undone, which is a valid index of `Z`; each element is
-		// handed out once.
+		// SAFETY: `(m, n)` are the dimensions of `z`, which are those of every
+		// zipped operand (see `ZipEq::new`). In column `j`, `start = min(j +
+		// strict, m) <= end = m` (the clamp covers the columns of a wide
+		// matrix, or for the upper triangle under `Transpose` a tall one, that
+		// have no element in the triangle), so each `(i, j)` with `start <= i <
+		// end` is in bounds and the contiguous branch (row stride 1, checked by
+		// `is_contiguous`) slices `end - start` rows from `(start, j)`;
+		// `from_dyn_idx` receives the index with the layout transform undone,
+		// which is a valid index of `Z`; each element is handed out once.
 		MatLayoutTransform::Transpose => unsafe {
 			if Z::Dyn::is_contiguous(&z) {
 				for j in 0..n {
-					let start = j + strict;
+					let start = Ord::min(j + strict, m);
 					let end = m;
 					if start == end {
 						continue;
@@ -2210,7 +2201,7 @@ fn for_each_mat_triangular_upper_with_index<
 				}
 			} else {
 				for j in 0..n {
-					let start = j + strict;
+					let start = Ord::min(j + strict, m);
 					let end = m;
 					if start == end {
 						continue;
@@ -2222,26 +2213,20 @@ fn for_each_mat_triangular_upper_with_index<
 				}
 			}
 		},
-		// SAFETY: TODO(review): `end = m - j - strict` underflows when `j +
-		// strict > m`, which happens when `Z` has more rows than columns (`n >
-		// m` here). In builds without overflow checks it wraps to nearly
-		// `usize::MAX`, `start == end` does not catch it, and the
-		// non-contiguous loop then calls `get_unchecked` with rows `>= m`: an
-		// out-of-bounds access from safe code (e.g. a 4x2
-		// `zip!(a.transpose_mut().reverse_cols_mut(), &mut
-		// b).for_each_triangular_upper_with_index(..)`, reproduced in release).
-		// When `j + strict <= m`, `(m, n)` are the dimensions of `z`, which are
-		// those of every zipped operand (see `ZipEq::new`). In column `j`, `0
-		// <= end <= m`, so each `(i, j)` with `start <= i < end` is in bounds
-		// and the contiguous branch (row stride 1, checked by `is_contiguous`)
-		// slices `end - start` rows from `(start, j)`; `from_dyn_idx` receives
-		// the index with the layout transform undone, which is a valid index of
-		// `Z`; each element is handed out once.
+		// SAFETY: `(m, n)` are the dimensions of `z`, which are those of every
+		// zipped operand (see `ZipEq::new`). In column `j`, `end = m - min(j +
+		// strict, m)` lies in `0..=m` (the clamp covers the columns that have
+		// no element in the triangle when `Z` has more rows than columns), so
+		// each `(i, j)` with `start <= i < end` is in bounds and the contiguous
+		// branch (row stride 1, checked by `is_contiguous`) slices `end -
+		// start` rows from `(start, j)`; `from_dyn_idx` receives the index with
+		// the layout transform undone, which is a valid index of `Z`; each
+		// element is handed out once.
 		MatLayoutTransform::TransposeReverseRows => unsafe {
 			if Z::Dyn::is_contiguous(&z) {
 				for j in 0..n {
 					let start = 0;
-					let end = m - j - strict;
+					let end = m - Ord::min(j + strict, m);
 					if start == end {
 						continue;
 					}
@@ -2260,7 +2245,7 @@ fn for_each_mat_triangular_upper_with_index<
 			} else {
 				for j in 0..n {
 					let start = 0;
-					let end = m - j - strict;
+					let end = m - Ord::min(j + strict, m);
 					if start == end {
 						continue;
 					}

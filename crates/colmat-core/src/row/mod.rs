@@ -1,8 +1,8 @@
 //! Ported from colmat-rs `faer/src/row/` (`mod.rs`, `rowref.rs`, `rowmut.rs`, `rowown.rs`, `row_index.rs`) at `71337cdc`.
 //! Changed: the rayon iterators and the `linalg` reductions were removed; `Debug` no longer goes through `hacks::hijack_debug`; every unsafe block carries a `// SAFETY:` comment.
-//! Known defects inherited from colmat-rs are marked `TODO(review)` (see
-//! `docs/worklogs/2026-11-20-colmat-core-views-port.md`). faer's MIT notice:
-//! `LICENSE-faer`.
+//! The soundness defects inherited from colmat-rs (see
+//! `docs/worklogs/2026-11-20-colmat-core-views-port.md`) are fixed (#14).
+//! faer's MIT notice: `LICENSE-faer`.
 use crate::Shape;
 use crate::internal_prelude::*;
 use crate::utils::bound::{One, Zero};

@@ -1,8 +1,8 @@
 //! Ported from colmat-rs `faer/src/mat/` (`mod.rs`, `matref.rs`, `matmut.rs`, `matown.rs`, `mat_index.rs`) at `71337cdc`.
 //! Changed: the rayon iterators (`par_*`), the `linalg` reductions (`norm_*`, `sum`, `determinant`, `kron`) and the dead `SyncCell`/`as_type` were removed; the layout copy is `crate::layout`; every unsafe block carries a `// SAFETY:` comment.
-//! Known defects inherited from colmat-rs are marked `TODO(review)` (see
-//! `docs/worklogs/2026-11-20-colmat-core-views-port.md`). faer's MIT notice:
-//! `LICENSE-faer`.
+//! The soundness defects inherited from colmat-rs (see
+//! `docs/worklogs/2026-11-20-colmat-core-views-port.md`) are fixed (#14).
+//! faer's MIT notice: `LICENSE-faer`.
 use crate::{Shape, Stride, Unbind};
 use colmat_traits::{ComplexField, Conjugate};
 use core::marker::PhantomData;

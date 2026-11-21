@@ -1,8 +1,10 @@
 //! Ported from colmat-rs `faer/src/utils/bound.rs` at `71337cdc`.
-//! Changed: the rayon item was removed; every unsafe block carries a `// SAFETY:` comment.
-//! Known defects inherited from colmat-rs are marked `TODO(review)` (see
-//! `docs/worklogs/2026-11-20-colmat-core-views-port.md`). faer's MIT notice:
-//! `LICENSE-faer`.
+//! Changed: the rayon item was removed; every unsafe block carries a `// SAFETY:` comment;
+//! `Array::as_mut` borrows `self`, `Array`'s range indexing is checked, and
+//! `IdxIncOne`/`MaybeIdxOne` are `repr(transparent)` (#14; reported as
+//! tensor4all/colmat-rs#256). One known gap of the index invariant is marked
+//! `TODO(review)` (see `docs/worklogs/2026-11-20-colmat-core-views-port.md`).
+//! faer's MIT notice: `LICENSE-faer`.
 use crate::{Index, Shape, ShapeIdx, SignedIndex, Unbind, assert};
 use core::fmt;
 use core::marker::PhantomData;
@@ -865,13 +867,9 @@ impl<'n, T> Array<'n, T> {
 	/// returns the unconstrained slice.
 	#[inline]
 	#[track_caller]
-	pub fn as_mut<'a>(&mut self) -> &'a mut [T] {
-		// SAFETY: TODO(review): the cast is layout-correct (`Array<'n, T>` is
-		// `repr(transparent)` over `[T]`), but the result's lifetime `'a` is
-		// chosen by the caller and not tied to the borrow of `self`, so two
-		// calls return aliasing `&mut [T]` and the slice can outlive the array.
-		// This looks unsound from safe code; the signature probably should be
-		// `fn as_mut(&mut self) -> &mut [T]`.
+	pub fn as_mut(&mut self) -> &mut [T] {
+		// SAFETY: `Array<'n, T>` is `repr(transparent)` over `[T]`, so the cast
+		// keeps the length metadata; the result borrows `self` mutably.
 		unsafe { &mut *(self as *mut _ as *mut _) }
 	}
 
@@ -894,40 +892,16 @@ impl<'n, T> core::ops::Index<Range<IdxInc<'n>>> for Array<'n, T> {
 
 	#[track_caller]
 	fn index(&self, idx: Range<IdxInc<'n>>) -> &Self::Output {
-		#[cfg(debug_assertions)]
-		{
-			&self.unbound[idx.start.unbound()..idx.end.unbound()]
-		}
-		#[cfg(not(debug_assertions))]
-		// SAFETY: TODO(review): `start <= n` and `end <= n` by `IdxInc<'n>`'s
-		// invariant, and the array has length `n` (checked in
-		// `from_ref`/`from_mut`), but nothing guarantees `start <= end`; a
-		// reversed range such as `idx_inc(2)..idx_inc(1)` reaches
-		// `get_unchecked` with an invalid range from safe code in builds
-		// without debug assertions.
-		unsafe {
-			self.unbound
-				.get_unchecked(idx.start.unbound()..idx.end.unbound())
-		}
+		// Checked slicing: the brand bounds both ends by the length, but not
+		// `start <= end`, so a reversed range must panic here.
+		&self.unbound[idx.start.unbound()..idx.end.unbound()]
 	}
 }
 impl<'n, T> core::ops::IndexMut<Range<IdxInc<'n>>> for Array<'n, T> {
 	#[track_caller]
 	fn index_mut(&mut self, idx: Range<IdxInc<'n>>) -> &mut Self::Output {
-		#[cfg(debug_assertions)]
-		{
-			&mut self.unbound[idx.start.unbound()..idx.end.unbound()]
-		}
-		#[cfg(not(debug_assertions))]
-		// SAFETY: TODO(review): `start <= n` and `end <= n` by `IdxInc<'n>`'s
-		// invariant, and the array has length `n` (checked in
-		// `from_ref`/`from_mut`), but nothing guarantees `start <= end`; a
-		// reversed range reaches `get_unchecked_mut` with an invalid range from
-		// safe code in builds without debug assertions.
-		unsafe {
-			self.unbound
-				.get_unchecked_mut(idx.start.unbound()..idx.end.unbound())
-		}
+		// Checked slicing, as in `Index`.
+		&mut self.unbound[idx.start.unbound()..idx.end.unbound()]
 	}
 }
 impl<'n, T> core::ops::Index<Idx<'n>> for Array<'n, T> {
@@ -970,11 +944,13 @@ pub struct One;
 pub struct Zero;
 /// index equal to zero ro one
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
 pub struct IdxIncOne<I: Index = usize> {
 	inner: I,
 }
 /// index equal to zero ro one, or a sentinel value
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
 pub struct MaybeIdxOne<I: Index = usize> {
 	inner: I,
 }

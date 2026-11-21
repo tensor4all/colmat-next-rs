@@ -1,8 +1,8 @@
 //! Ported from colmat-rs `faer/src/perm/` (`mod.rs`, `permref.rs`, `permown.rs`) at `71337cdc`.
 //! Changed: the in-place permutations and their scratch queries (which need the workspace contract) were removed; every unsafe block carries a `// SAFETY:` comment.
-//! Known defects inherited from colmat-rs are marked `TODO(review)` (see
-//! `docs/worklogs/2026-11-20-colmat-core-views-port.md`). faer's MIT notice:
-//! `LICENSE-faer`.
+//! The soundness defects inherited from colmat-rs (see
+//! `docs/worklogs/2026-11-20-colmat-core-views-port.md`) are fixed (#14).
+//! faer's MIT notice: `LICENSE-faer`.
 use crate::Idx;
 use crate::internal_prelude::*;
 use crate::zip::{Last, Zip};
@@ -154,10 +154,11 @@ pub fn swap_cols_idx<M: Shape, N: Shape, T>(
 // * every entry of `forward` and `inverse` is `< n`, and
 //   `inverse[forward[i]] == i` for every `i < n`.
 // The safe constructors check it (`new_checked`, `as_shape`, `into_shape`);
-// `new_unchecked` requires it of the caller. The casts in this module also
-// assume that `N::Idx<I>` has the layout of `I` (it is `I` or a
+// `new_unchecked` requires it of the caller. The casts between shapes in this
+// module also need `N::Idx<I>` to have the layout of `I` (it is `I` or a
 // `#[repr(transparent)]` wrapper of it); this does not hold for `N = One`,
-// whose index type is the zero-sized `Zero` (see the `TODO(review)` notes).
+// whose index type is the zero-sized `Zero`, so those casts assert it
+// (`crate::idx_has_index_layout`) and panic for `One` (#14).
 mod permown;
 mod permref;
 /// permutation matrix

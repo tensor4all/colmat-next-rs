@@ -20,17 +20,18 @@ impl<I: Index, N: Shape> Perm<I, N> {
 	#[inline]
 	pub fn into_shape<M: Shape>(self, dim: M) -> Perm<I, M> {
 		assert!(self.len().unbound() == dim.unbound());
+		core::assert!(
+			crate::idx_has_index_layout::<N, I>()
+				&& crate::idx_has_index_layout::<M, I>(),
+			"`into_shape` between shapes whose indices are not stored as `I`"
+		);
 		// SAFETY: `Box::into_raw` gives a pointer from the global allocator,
 		// and the slice-pointer cast keeps its length; `N::Idx<I>` and
-		// `M::Idx<I>` both have the layout of `I`, so the layout of the
-		// allocation is unchanged. The length is `dim` (checked above) and
-		// every entry is `< dim` by the permutation invariant, so the entries
-		// are valid `M::Idx<I>` and the invariant holds for shape `M`.
-		// TODO(review): the layout claim fails when `N` or `M` is `One`
-		// (`One::Idx<I>` is the zero-sized `Zero`): `into_shape(One)` rebuilds
-		// the `Box` with a zero-sized layout for an `n * size_of::<I>()`
-		// allocation, and `into_shape` from a `Perm<I, One>` built from real
-		// `Box<[Zero]>`s yields a `Box<[I]>` over a dangling pointer.
+		// `M::Idx<I>` both have the layout of `I` (checked above: neither shape
+		// is `One`), so the layout of the allocation is unchanged. The length
+		// is `dim` (checked above) and every entry is `< dim` by the
+		// permutation invariant, so the entries are valid `M::Idx<I>` and the
+		// invariant holds for shape `M`.
 		unsafe {
 			Perm {
 				0: Own {
