@@ -56,6 +56,47 @@ fn assert_dropped_once(created: &[u32], context: &str) {
 	assert_eq!(got, want, "{context}: drops {dropped:?}");
 }
 
+/// Uses `m` again after a caught panic: every element it still owns is live
+/// (created, not yet dropped, and distinct), and it can grow and shrink
+/// again. The ids of the elements it creates are added to `created`.
+#[track_caller]
+fn use_again_after_panic(
+	m: &mut Mat<Tracked>,
+	created: &mut Vec<u32>,
+	context: &str,
+) {
+	let dropped = DROPPED.with(|d| d.borrow().clone());
+	let mut seen = Vec::new();
+	for j in 0..m.ncols() {
+		for i in 0..m.nrows() {
+			let id = m[(i, j)].0;
+			assert!(
+				created.contains(&id),
+				"{context}: ({i}, {j}) holds {id}, never created"
+			);
+			assert!(
+				!dropped.contains(&id),
+				"{context}: ({i}, {j}) holds {id}, already dropped"
+			);
+			seen.push(id);
+		}
+	}
+	let n_seen = seen.len();
+	seen.sort_unstable();
+	seen.dedup();
+	assert_eq!(seen.len(), n_seen, "{context}: an element is owned twice");
+
+	let (m2, n2) = (m.nrows() + 1, m.ncols() + 2);
+	m.resize_with(m2, n2, |i, j| {
+		let id = 2000 + (i * 10 + j) as u32;
+		created.push(id);
+		Tracked(id)
+	});
+	assert_eq!((m.nrows(), m.ncols()), (m2, n2), "{context}");
+	m.truncate(1, 1);
+	assert_eq!((m.nrows(), m.ncols()), (1, 1), "{context}");
+}
+
 #[test]
 fn resize_with_drops_each_element_once_when_f_panics() {
 	// Growth in rows, in columns and in both, with `f` panicking at each call.
@@ -83,11 +124,11 @@ fn resize_with_drops_each_element_once_when_f_panics() {
 				})
 			}));
 			assert!(result.is_err());
+			let context =
+				format!("{m0}x{n0} -> {m1}x{n1}, panic at call {panic_at}");
+			use_again_after_panic(&mut m, &mut created, &context);
 			drop(m);
-			assert_dropped_once(
-				&created,
-				&format!("{m0}x{n0} -> {m1}x{n1}, panic at call {panic_at}"),
-			);
+			assert_dropped_once(&created, &context);
 		}
 	}
 }
@@ -115,13 +156,12 @@ fn truncate_drops_each_element_once_when_a_drop_panics() {
 					catch_unwind(AssertUnwindSafe(|| m.truncate(m1, n1)));
 				assert!(result.is_err());
 				assert!((m.nrows(), m.ncols()) <= (m0, n0));
-				drop(m);
-				assert_dropped_once(
-					&created,
-					&format!(
-						"{m0}x{n0} -> {m1}x{n1}, panic in drop of {victim}"
-					),
+				let context = format!(
+					"{m0}x{n0} -> {m1}x{n1}, panic in drop of {victim}"
 				);
+				use_again_after_panic(&mut m, &mut created, &context);
+				drop(m);
+				assert_dropped_once(&created, &context);
 			}
 		}
 	}
