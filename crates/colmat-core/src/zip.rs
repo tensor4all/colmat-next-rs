@@ -345,6 +345,65 @@ pub enum MatLayoutTransform {
 	/// matrix is transposed, then rows are reversed
 	TransposeReverseRows,
 }
+/// The columns `0..triangular_lower_ncols(layout, m, n)` of an `m x n` view
+/// that `with_layout(_, layout)` produced are those that can hold elements of
+/// the lower triangle of the original view; the others are skipped.
+///
+/// The triangular iterations take their loop bounds from this function and
+/// [`triangular_lower_rows`]; the upper triangle uses them with
+/// [`transposed`] layouts. The Kani harnesses in `kani_proofs.rs` (#17)
+/// prove, for every `m`, `n` and `j`, that the ranges are in bounds and
+/// visit exactly the triangle.
+#[inline(always)]
+pub(crate) fn triangular_lower_ncols(
+	layout: MatLayoutTransform,
+	m: usize,
+	n: usize,
+) -> usize {
+	match layout {
+		MatLayoutTransform::None | MatLayoutTransform::ReverseRows => {
+			Ord::min(m, n)
+		},
+		MatLayoutTransform::Transpose
+		| MatLayoutTransform::TransposeReverseRows => n,
+	}
+}
+
+/// The rows `start..end` of column `j` of an `m`-row view that
+/// `with_layout(_, layout)` produced that hold the lower triangle of the
+/// original view (below the diagonal if `strict == 1`, on or below it if
+/// `strict == 0`). Always `start <= end <= m`.
+#[inline(always)]
+pub(crate) fn triangular_lower_rows(
+	layout: MatLayoutTransform,
+	m: usize,
+	j: usize,
+	strict: usize,
+) -> (usize, usize) {
+	match layout {
+		MatLayoutTransform::None => (Ord::min(j + strict, m), m),
+		MatLayoutTransform::ReverseRows => (0, m - Ord::min(j + strict, m)),
+		MatLayoutTransform::Transpose => (0, Ord::min(j + 1 - strict, m)),
+		MatLayoutTransform::TransposeReverseRows => {
+			(m - Ord::min(j + 1 - strict, m), m)
+		},
+	}
+}
+
+/// The layout whose lower triangle is the upper triangle of `layout`.
+#[inline(always)]
+pub(crate) fn transposed(layout: MatLayoutTransform) -> MatLayoutTransform {
+	match layout {
+		MatLayoutTransform::None => MatLayoutTransform::Transpose,
+		MatLayoutTransform::ReverseRows => {
+			MatLayoutTransform::TransposeReverseRows
+		},
+		MatLayoutTransform::Transpose => MatLayoutTransform::None,
+		MatLayoutTransform::TransposeReverseRows => {
+			MatLayoutTransform::ReverseRows
+		},
+	}
+}
 /// vector layout transformation. used for zipping optimizations
 #[derive(Copy, Clone)]
 pub enum VecLayoutTransform {
@@ -1897,9 +1956,15 @@ fn for_each_mat_triangular_lower_with_index<
 		// which is a valid index of `Z`; each element is handed out once.
 		MatLayoutTransform::None => unsafe {
 			if Z::Dyn::is_contiguous(&z) {
-				for j in 0..n {
-					let start = Ord::min(j + strict, m);
-					let end = m;
+				for j in
+					0..triangular_lower_ncols(MatLayoutTransform::None, m, n)
+				{
+					let (start, end) = triangular_lower_rows(
+						MatLayoutTransform::None,
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -1916,9 +1981,15 @@ fn for_each_mat_triangular_lower_with_index<
 					);
 				}
 			} else {
-				for j in 0..n {
-					let start = Ord::min(j + strict, m);
-					let end = m;
+				for j in
+					0..triangular_lower_ncols(MatLayoutTransform::None, m, n)
+				{
+					let (start, end) = triangular_lower_rows(
+						MatLayoutTransform::None,
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -1939,9 +2010,17 @@ fn for_each_mat_triangular_lower_with_index<
 		// element is handed out once.
 		MatLayoutTransform::ReverseRows => unsafe {
 			if Z::Dyn::is_contiguous(&z) {
-				for j in 0..Ord::min(m, n) {
-					let start = 0;
-					let end = m - j - strict;
+				for j in 0..triangular_lower_ncols(
+					MatLayoutTransform::ReverseRows,
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						MatLayoutTransform::ReverseRows,
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -1958,9 +2037,17 @@ fn for_each_mat_triangular_lower_with_index<
 					);
 				}
 			} else {
-				for j in 0..Ord::min(m, n) {
-					let start = 0;
-					let end = m - j - strict;
+				for j in 0..triangular_lower_ncols(
+					MatLayoutTransform::ReverseRows,
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						MatLayoutTransform::ReverseRows,
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -1980,9 +2067,17 @@ fn for_each_mat_triangular_lower_with_index<
 		// which is a valid index of `Z`; each element is handed out once.
 		MatLayoutTransform::Transpose => unsafe {
 			if Z::Dyn::is_contiguous(&z) {
-				for j in 0..n {
-					let start = 0;
-					let end = Ord::min(m, j + (1 - strict));
+				for j in 0..triangular_lower_ncols(
+					MatLayoutTransform::Transpose,
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						MatLayoutTransform::Transpose,
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -1999,9 +2094,17 @@ fn for_each_mat_triangular_lower_with_index<
 					);
 				}
 			} else {
-				for j in 0..n {
-					let start = 0;
-					let end = Ord::min(m, j + (1 - strict));
+				for j in 0..triangular_lower_ncols(
+					MatLayoutTransform::Transpose,
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						MatLayoutTransform::Transpose,
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -2021,9 +2124,17 @@ fn for_each_mat_triangular_lower_with_index<
 		// which is a valid index of `Z`; each element is handed out once.
 		MatLayoutTransform::TransposeReverseRows => unsafe {
 			if Z::Dyn::is_contiguous(&z) {
-				for j in 0..n {
-					let start = m - Ord::min(j + (1 - strict), m);
-					let end = m;
+				for j in 0..triangular_lower_ncols(
+					MatLayoutTransform::TransposeReverseRows,
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						MatLayoutTransform::TransposeReverseRows,
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -2040,9 +2151,17 @@ fn for_each_mat_triangular_lower_with_index<
 					);
 				}
 			} else {
-				for j in 0..n {
-					let start = m - Ord::min(j + (1 - strict), m);
-					let end = m;
+				for j in 0..triangular_lower_ncols(
+					MatLayoutTransform::TransposeReverseRows,
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						MatLayoutTransform::TransposeReverseRows,
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -2095,9 +2214,17 @@ fn for_each_mat_triangular_upper_with_index<
 		// which is a valid index of `Z`; each element is handed out once.
 		MatLayoutTransform::None => unsafe {
 			if Z::Dyn::is_contiguous(&z) {
-				for j in 0..n {
-					let start = 0;
-					let end = Ord::min(m, j + (1 - strict));
+				for j in 0..triangular_lower_ncols(
+					transposed(MatLayoutTransform::None),
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						transposed(MatLayoutTransform::None),
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -2114,9 +2241,17 @@ fn for_each_mat_triangular_upper_with_index<
 					);
 				}
 			} else {
-				for j in 0..n {
-					let start = 0;
-					let end = Ord::min(m, j + (1 - strict));
+				for j in 0..triangular_lower_ncols(
+					transposed(MatLayoutTransform::None),
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						transposed(MatLayoutTransform::None),
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -2138,9 +2273,17 @@ fn for_each_mat_triangular_upper_with_index<
 		// handed out once.
 		MatLayoutTransform::ReverseRows => unsafe {
 			if Z::Dyn::is_contiguous(&z) {
-				for j in 0..n {
-					let start = m - Ord::min(j + (1 - strict), m);
-					let end = m;
+				for j in 0..triangular_lower_ncols(
+					transposed(MatLayoutTransform::ReverseRows),
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						transposed(MatLayoutTransform::ReverseRows),
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -2157,9 +2300,17 @@ fn for_each_mat_triangular_upper_with_index<
 					);
 				}
 			} else {
-				for j in 0..n {
-					let start = m - Ord::min(j + (1 - strict), m);
-					let end = m;
+				for j in 0..triangular_lower_ncols(
+					transposed(MatLayoutTransform::ReverseRows),
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						transposed(MatLayoutTransform::ReverseRows),
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -2181,9 +2332,17 @@ fn for_each_mat_triangular_upper_with_index<
 		// which is a valid index of `Z`; each element is handed out once.
 		MatLayoutTransform::Transpose => unsafe {
 			if Z::Dyn::is_contiguous(&z) {
-				for j in 0..n {
-					let start = Ord::min(j + strict, m);
-					let end = m;
+				for j in 0..triangular_lower_ncols(
+					transposed(MatLayoutTransform::Transpose),
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						transposed(MatLayoutTransform::Transpose),
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -2200,9 +2359,17 @@ fn for_each_mat_triangular_upper_with_index<
 					);
 				}
 			} else {
-				for j in 0..n {
-					let start = Ord::min(j + strict, m);
-					let end = m;
+				for j in 0..triangular_lower_ncols(
+					transposed(MatLayoutTransform::Transpose),
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						transposed(MatLayoutTransform::Transpose),
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -2224,9 +2391,17 @@ fn for_each_mat_triangular_upper_with_index<
 		// element is handed out once.
 		MatLayoutTransform::TransposeReverseRows => unsafe {
 			if Z::Dyn::is_contiguous(&z) {
-				for j in 0..n {
-					let start = 0;
-					let end = m - Ord::min(j + strict, m);
+				for j in 0..triangular_lower_ncols(
+					transposed(MatLayoutTransform::TransposeReverseRows),
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						transposed(MatLayoutTransform::TransposeReverseRows),
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -2243,9 +2418,17 @@ fn for_each_mat_triangular_upper_with_index<
 					);
 				}
 			} else {
-				for j in 0..n {
-					let start = 0;
-					let end = m - Ord::min(j + strict, m);
+				for j in 0..triangular_lower_ncols(
+					transposed(MatLayoutTransform::TransposeReverseRows),
+					m,
+					n,
+				) {
+					let (start, end) = triangular_lower_rows(
+						transposed(MatLayoutTransform::TransposeReverseRows),
+						m,
+						j,
+						strict,
+					);
 					if start == end {
 						continue;
 					}
@@ -2277,7 +2460,6 @@ fn for_each_mat_triangular_lower<
 			Dyn = Z::Dyn,
 		>,
 {
-	use MatLayoutTransform::*;
 	let z = if transpose {
 		Z::with_layout(z, MatLayoutTransform::Transpose)
 	} else {
@@ -2287,10 +2469,7 @@ fn for_each_mat_triangular_lower<
 	let mut z = Z::Dyn::with_layout(z, layout);
 	let m = Z::Dyn::nrows(&z);
 	let n = Z::Dyn::ncols(&z);
-	let n = match layout {
-		None | ReverseRows => Ord::min(m, n),
-		Transpose | TransposeReverseRows => n,
-	};
+	let n = triangular_lower_ncols(layout, m, n);
 	if m == 0 || n == 0 {
 		return;
 	}
@@ -2299,24 +2478,17 @@ fn for_each_mat_triangular_lower<
 		Diag::Include => false,
 	};
 	// SAFETY: `(m, n)` are the dimensions of `z`, which are those of every
-	// zipped operand (see `ZipEq::new`), and `n` was clamped to `min(m, n)` for
-	// the `None`/`ReverseRows` layouts. For every layout, `j < n` gives `0 <=
-	// start <= end <= m` (`j + strict <= m` for `None`, `m - (j + strict) >= 0`
-	// for `ReverseRows`, `min(.., m)` for the transposed layouts), so each `(i,
-	// j)` with `start <= i < end` is in bounds and the contiguous branch (row
+	// zipped operand (see `ZipEq::new`), and `n` is `triangular_lower_ncols`.
+	// For every layout, `j < n` gives `0 <= start <= end <= m`
+	// (`triangular_lower_rows`), so each `(i, j)` with `start <= i < end` is in
+	// bounds and the contiguous branch (row
 	// stride 1, checked by `is_contiguous`) slices `end - start` rows from
 	// `(start, j)`; each element is handed out once.
 	unsafe {
 		if Z::Dyn::is_contiguous(&z) {
 			for j in 0..n {
-				let (start, end) = match layout {
-					None => (j + strict as usize, m),
-					ReverseRows => (0, (m - (j + strict as usize))),
-					Transpose => (0, (j + !strict as usize).min(m)),
-					TransposeReverseRows => {
-						(m - (j + !strict as usize).min(m), m)
-					},
-				};
+				let (start, end) =
+					triangular_lower_rows(layout, m, j, strict as usize);
 				let len = end - start;
 				if start == end {
 					continue;
@@ -2331,14 +2503,8 @@ fn for_each_mat_triangular_lower<
 			}
 		} else {
 			for j in 0..n {
-				let (start, end) = match layout {
-					None => (j + strict as usize, m),
-					ReverseRows => (0, (m - (j + strict as usize))),
-					Transpose => (0, (j + !strict as usize).min(m)),
-					TransposeReverseRows => {
-						(m - (j + !strict as usize).min(m), m)
-					},
-				};
+				let (start, end) =
+					triangular_lower_rows(layout, m, j, strict as usize);
 				if start == end {
 					continue;
 				}
