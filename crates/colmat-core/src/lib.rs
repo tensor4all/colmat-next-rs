@@ -370,23 +370,6 @@ pub fn concat_impl<T: ComplexField>(
 	mat
 }
 
-/// concatenates the matrices in each row horizontally,
-/// then concatenates the results vertically
-///
-/// `concat![[a0, a1, a2], [b1, b2]]` results in the matrix
-/// ```notcode
-/// [a0 | a1 | a2][b0 | b1]
-/// ```
-#[macro_export]
-macro_rules! concat {
-    () => {
-        { compile_error!("number of columns in the matrix is ambiguous"); }
-    };
-    ($([$($v:expr),* $(,)?]),* $(,)?) => {
-        { $crate::concat_impl(& [$(& [$(($v).as_ref().__canonicalize(),)*],)*]) }
-    };
-}
-
 /// column vector
 pub mod col;
 /// diagonal matrix
@@ -408,6 +391,8 @@ pub mod zip;
 
 #[cfg(all(test, feature = "std"))]
 mod exhaustive_tests;
+#[cfg(kani)]
+mod kani_proofs;
 #[cfg(all(test, feature = "std"))]
 mod soundness_tests;
 #[cfg(all(test, feature = "std"))]
@@ -870,3 +855,24 @@ pub extern crate num_complex as complex;
 pub extern crate reborrow;
 
 extern crate self as colmat_core;
+
+// Defined last on purpose: a `macro_rules!` macro is in scope by name for
+// the code after it, and a crate-local `concat!` there would shadow
+// `core::concat!`, which the standard and Kani (#17) assertion macros expand
+// to. `#[macro_export]` still exports it as `colmat_core::concat!`.
+/// concatenates the matrices in each row horizontally,
+/// then concatenates the results vertically
+///
+/// `concat![[a0, a1, a2], [b1, b2]]` results in the matrix
+/// ```notcode
+/// [a0 | a1 | a2][b0 | b1]
+/// ```
+#[macro_export]
+macro_rules! concat {
+    () => {
+        { compile_error!("number of columns in the matrix is ambiguous"); }
+    };
+    ($([$($v:expr),* $(,)?]),* $(,)?) => {
+        { $crate::concat_impl(& [$(& [$(($v).as_ref().__canonicalize(),)*],)*]) }
+    };
+}

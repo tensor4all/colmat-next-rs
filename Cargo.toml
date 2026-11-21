@@ -30,6 +30,8 @@ reborrow = "0.5.5"
 unsafe_op_in_unsafe_fn = "deny"
 # Public items without documentation (denied in CI through `-D warnings`).
 missing_docs = "warn"
+# `cfg(kani)` gates the Kani proof harnesses (#17).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [workspace.lints.clippy]
 # An unsafe block without a `// SAFETY:` proof cannot be reviewed against its contract.
