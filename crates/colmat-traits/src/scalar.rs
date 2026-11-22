@@ -8,6 +8,7 @@
 //! [`Precision`]. faer's MIT notice: `LICENSE-faer`.
 
 use crate::conjugate::Conjugate;
+use crate::cost::CostWeight;
 use crate::math_utils::*;
 use crate::ops::{NegByRef, RefOps, imply::Imply};
 use crate::precision::Precision;
@@ -39,6 +40,9 @@ pub trait ComplexField:
 	/// The SIMD provider for this type (S1). [`crate::NoSimd`] is always
 	/// valid.
 	type Simd: SimdField<Self>;
+	/// The cost weight of this type against `f64` (S3, optional). The
+	/// default prices the type as `f64`; see [`CostWeight`].
+	const COST: CostWeight = CostWeight::F64;
 
 	/// Additive identity.
 	fn zero_impl() -> Self;
@@ -108,11 +112,12 @@ pub trait RealField:
 }
 
 macro_rules! impl_native_real {
-	($ty:ident, $sqrt:path, $fma:path) => {
+	($ty:ident, $cost:expr, $sqrt:path, $fma:path) => {
 		impl ComplexField for $ty {
 			const IS_REAL: bool = true;
 			type Real = Self;
 			type Simd = NativeSimd;
+			const COST: CostWeight = $cost;
 
 			#[inline(always)]
 			fn zero_impl() -> Self {
@@ -220,18 +225,20 @@ macro_rules! impl_native_real {
 }
 
 #[cfg(feature = "std")]
-impl_native_real!(f64, f64::sqrt, f64::mul_add);
+impl_native_real!(f64, CostWeight::F64, f64::sqrt, f64::mul_add);
 #[cfg(not(feature = "std"))]
-impl_native_real!(f64, libm::sqrt, libm::fma);
+impl_native_real!(f64, CostWeight::F64, libm::sqrt, libm::fma);
 #[cfg(feature = "std")]
-impl_native_real!(f32, f32::sqrt, f32::mul_add);
+impl_native_real!(f32, CostWeight::F32, f32::sqrt, f32::mul_add);
 #[cfg(not(feature = "std"))]
-impl_native_real!(f32, libm::sqrtf, libm::fmaf);
+impl_native_real!(f32, CostWeight::F32, libm::sqrtf, libm::fmaf);
 
 impl<T: RealField> ComplexField for Complex<T> {
 	const IS_REAL: bool = false;
 	type Real = T;
 	type Simd = ComplexSimd<T::Simd>;
+	// against the complex rates (`c64`), the weight of the component type
+	const COST: CostWeight = T::COST;
 
 	#[inline]
 	fn zero_impl() -> Self {

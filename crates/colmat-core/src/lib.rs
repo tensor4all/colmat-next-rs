@@ -14,7 +14,8 @@
 //!   over a [`Producer`](utils::thread::Producer) such as the chunks of a
 //!   view), and the route onto a threadteam team (`utils::team`, feature
 //!   `threadteam`, on by default);
-//! - the cost model that decides a region's width ([`utils::cost`]);
+//! - the cost model that decides a region's width ([`utils::cost`]), priced
+//!   per scalar through [`ComplexField::COST`];
 //! - the static partitions of a region ([`utils::partition`]);
 //! - the caller-owned workspace ([`workspace`]).
 //!

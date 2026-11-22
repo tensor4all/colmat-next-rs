@@ -34,6 +34,9 @@ All notable changes are recorded here. The format follows
   checks the stack before it writes; an integration test counts allocations across the team.
   Kani harnesses for the split arithmetic. Work log:
   `docs/worklogs/2026-11-21-colmat-core-execution-layer.md`.
+- `colmat-traits` (#20): `CostWeight` and `ComplexField::COST` (S3, optional, default `f64`'s), the
+  scalar's weight against `f64` for compute- and memory-bound kernel families, which replaces the
+  identity test of colmat-rs's `Rate::of`.
 
 - `colmat-core` (#17, trial): Kani proof harnesses (`src/kani_proofs.rs`) for the row ranges of the
   triangular `zip!` iterations (every size), the index casts and permutation invariant, and

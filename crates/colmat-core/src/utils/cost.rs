@@ -3,8 +3,8 @@
 //! `docs/design/thresholds.md`).
 //!
 //! The dispatch cost belongs to the token ([`ParShape::dispatch_cost`]); the serial time of a
-//! kernel family is its own throughput constant ([`Rates`]) for the scalar's kind (real or
-//! complex). `PAYS` mirrors `threadteam::PAYS` so that
+//! kernel family is its own throughput constant ([`Rates`]) times the scalar's weight
+//! ([`CostWeight`], from `colmat-traits`). `PAYS` mirrors `threadteam::PAYS` so that
 //! a build without the parallel route still decides the way the route does; a test compares the
 //! two when `threadteam` is there.
 //!
@@ -16,12 +16,12 @@
 //! Ported from colmat-rs `faer/src/utils/cost.rs` at `71337cdc` (lines 1-512 and 615-1033, and
 //! the tests that do not need a factorization). Changed:
 //!
-//! * [`Rate::of`] takes the `f64` rate for every real scalar and the `c64` rate for every
-//!   complex one. colmat-rs halved it for the native `f32` and `c32` by testing
-//!   `IS_NATIVE_F32`/`IS_NATIVE_C32`, which `colmat-traits` does not have (#7); until the scalar
-//!   states its own weight (the next commit), `f32` and `c32` are priced as `f64` and `c64`.
-//!   `Rates::gemm_single` and `ns_per_mac` (the measured `f32` product rate) wait for that
-//!   weight too and are not ported here.
+//! * [`Rate::of`] multiplies by the scalar's [`ComplexField::COST`] instead of branching on
+//!   `IS_NATIVE_F32`/`IS_NATIVE_C32` (debts K2, K4); each family is tagged compute- or
+//!   memory-bound ([`Bound`]) to pick the weight. `f32`/`c32` keep half the `f64`/`c64` rate.
+//! * `Rates::gemm_single` and `ns_per_mac` are gone: `f32` is half of `f64` through its weight.
+//!   On `x86_64-avx512` that is 0.03205 ns per multiply-add instead of the measured 0.0320
+//!   (0.16 percent apart); on `aarch64-apple` the entry was already half.
 //! * `gemm_ns_per_mac` (the matrix product, core-3), `block_apply_estimate`, `PanelTeam` and
 //!   `lookahead_width` (the factorizations) and the `par-trace` probes are not ported.
 //! * The width functions are public.
@@ -29,7 +29,7 @@
 //! faer's MIT notice: `LICENSE-faer`.
 
 use crate::ParShape;
-use colmat_traits::ComplexField;
+use colmat_traits::{ComplexField, CostWeight};
 use core::num::NonZeroUsize;
 use core::time::Duration;
 
@@ -235,22 +235,66 @@ impl ParThreshold {
 	}
 }
 
+/// Whether a kernel family's time follows its arithmetic or the bytes it moves: the
+/// [`CostWeight`] of the scalar has one weight for each.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Bound {
+	/// The time follows the arithmetic (products, triangular solves and inverses, block
+	/// reflectors, the divide and conquer solves).
+	Compute,
+	/// The time follows the bytes moved (copies, swaps, matrix-vector products, the rank-one
+	/// and rank-two updates of the unblocked factorization steps, sparse products).
+	Memory,
+}
+
 /// Serial throughput of a kernel family, nanoseconds per unit of work for `f64` and `c64`, per
-/// host class ([`Rates`]). Measured with one thread, L2 resident shapes. Another real scalar
-/// takes the `f64` value, another complex scalar the `c64` value.
+/// host class ([`Rates`]). Measured with one thread, L2 resident shapes. Another scalar takes
+/// the rate of its kind (`real` or `cplx`) times its [`CostWeight`] for the family's
+/// [`Bound`]: `f32` and `c32` half of it, an unmeasured scalar all of it.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Rate {
 	/// `f64`.
 	pub real: f64,
 	/// `c64`.
 	pub cplx: f64,
+	/// Which weight of the scalar applies.
+	pub bound: Bound,
 }
 
 impl Rate {
-	/// Nanoseconds per unit for the scalar `T`: the `f64` or `c64` rate.
+	/// A compute-bound rate.
+	pub const fn compute(real: f64, cplx: f64) -> Self {
+		Self {
+			real,
+			cplx,
+			bound: Bound::Compute,
+		}
+	}
+
+	/// A memory-bound rate.
+	pub const fn memory(real: f64, cplx: f64) -> Self {
+		Self {
+			real,
+			cplx,
+			bound: Bound::Memory,
+		}
+	}
+
+	/// The weight of `w` for this family.
+	#[inline]
+	pub const fn weight(self, w: CostWeight) -> f64 {
+		match self.bound {
+			Bound::Compute => w.compute,
+			Bound::Memory => w.memory,
+		}
+	}
+
+	/// Nanoseconds per unit for the scalar `T`: the `f64` or `c64` rate times `T`'s weight
+	/// ([`ComplexField::COST`]).
 	#[inline]
 	pub fn of<T: ComplexField>(self) -> f64 {
-		if T::IS_REAL { self.real } else { self.cplx }
+		let base = if T::IS_REAL { self.real } else { self.cplx };
+		base * self.weight(T::COST)
 	}
 }
 
@@ -347,11 +391,16 @@ const fn rmin(a: Rate, b: Rate) -> Rate {
 	Rate {
 		real: fmin(a.real, b.real),
 		cplx: fmin(a.cplx, b.cplx),
+		bound: a.bound,
 	}
 }
 
-const fn r(real: f64, cplx: f64) -> Rate {
-	Rate { real, cplx }
+const fn c(real: f64, cplx: f64) -> Rate {
+	Rate::compute(real, cplx)
+}
+
+const fn m(real: f64, cplx: f64) -> Rate {
+	Rate::memory(real, cplx)
 }
 
 impl Rates {
@@ -385,51 +434,51 @@ impl Rates {
 
 	/// `x86_64-avx512`: Zen 5 at 2.0 GHz, boost off (see the type docs).
 	pub const X86_64_AVX512: Rates = Rates {
-		gemm_mac: r(0.0641, 0.2565),
-		block_apply_mac: r(0.0676, 0.2685),
-		lu_full_pivot: r(0.4011, 0.8679),
-		bunch_kaufman: r(0.8295, 1.3904),
-		qr_col_pivot: r(0.3645, 1.0320),
-		bidiag: r(1.0427, 2.1997),
-		hessenberg: r(0.8576, 2.2212),
-		tridiag: r(0.7695, 1.9252),
+		gemm_mac: c(0.0641, 0.2565),
+		block_apply_mac: c(0.0676, 0.2685),
+		lu_full_pivot: m(0.4011, 0.8679),
+		bunch_kaufman: m(0.8295, 1.3904),
+		qr_col_pivot: m(0.3645, 1.0320),
+		bidiag: m(1.0427, 2.1997),
+		hessenberg: m(0.8576, 2.2212),
+		tridiag: m(0.7695, 1.9252),
 		// mean of matvec_colmajor (0.1743, 0.3373) and matvec_rowmajor (0.1565, 0.5057)
-		matvec: r(0.1654, 0.4215),
-		bidiag_svd_dc: r(152.9, 152.9),
-		tridiag_evd_dc: r(97.4, 97.4),
-		secular_roots: r(35.2, 35.2),
-		triangular_inverse: r(0.01936, 0.07228),
+		matvec: m(0.1654, 0.4215),
+		bidiag_svd_dc: c(152.9, 152.9),
+		tridiag_evd_dc: c(97.4, 97.4),
+		secular_roots: c(35.2, 35.2),
+		triangular_inverse: c(0.01936, 0.07228),
 		// median over spmm_{f64,c64}_n{2000,4000,8000,20000}_d{4,6,8,12,16,40}
-		sparse_matmul: r(4.1315, 5.2342),
-		householder_rank_one: r(0.4783, 1.0303),
+		sparse_matmul: m(4.1315, 5.2342),
+		householder_rank_one: m(0.4783, 1.0303),
 		// Zen 5 at 2.0 GHz, one thread, a scratch probe of the swap loop: swaps of 64 to 256 rows over 768 to 960 columns, one
 		// thread: 0.98 (`f64`) and 1.30 (`c64`) ns, 1.0 at 256 rows; the 0.55 of the M5 was
 		// used for every class and made the swap stage of a 64 x 1024 LU 1.7 times too cheap
-		lu_swap: r(0.98, 1.30),
+		lu_swap: m(0.98, 1.30),
 	};
 
 	/// `aarch64-apple`: Apple M5 Max (the constants of the first calibration).
 	pub const AARCH64_APPLE: Rates = Rates {
-		gemm_mac: r(0.037, 0.165),
-		block_apply_mac: r(0.037, 0.165),
-		lu_full_pivot: r(0.216, 0.6),
-		bunch_kaufman: r(0.238, 0.38),
-		qr_col_pivot: r(0.202, 0.713),
-		bidiag: r(0.48, 1.36),
-		hessenberg: r(0.451, 1.57),
-		tridiag: r(0.339, 1.16),
-		matvec: r(0.1, 0.34),
-		bidiag_svd_dc: r(53.0, 53.0),
-		tridiag_evd_dc: r(31.0, 31.0),
+		gemm_mac: c(0.037, 0.165),
+		block_apply_mac: c(0.037, 0.165),
+		lu_full_pivot: m(0.216, 0.6),
+		bunch_kaufman: m(0.238, 0.38),
+		qr_col_pivot: m(0.202, 0.713),
+		bidiag: m(0.48, 1.36),
+		hessenberg: m(0.451, 1.57),
+		tridiag: m(0.339, 1.16),
+		matvec: m(0.1, 0.34),
+		bidiag_svd_dc: c(53.0, 53.0),
+		tridiag_evd_dc: c(31.0, 31.0),
 		// derived, not measured: 35.2 * 31.0 / 97.4 (see the field)
-		secular_roots: r(11.2, 11.2),
-		triangular_inverse: r(0.0096, 0.0344),
-		sparse_matmul: r(1.5, 1.8),
-		householder_rank_one: r(0.212, 0.725),
+		secular_roots: c(11.2, 11.2),
+		triangular_inverse: c(0.0096, 0.0344),
+		sparse_matmul: m(1.5, 1.8),
+		householder_rank_one: m(0.212, 0.725),
 		// one row swap of one column, random pivot rows, columns of 64 to 1024 `f64`, cache
 		// resident, median of 0.31 to 1.0 over `m` 128 to 1024 and 16 to 128 swaps per column
 		// (colmat-rs `NS_PER_SWAP`)
-		lu_swap: r(0.55, 0.55),
+		lu_swap: m(0.55, 0.55),
 	};
 
 	/// `generic` (every unmeasured class): per entry the smaller of the measured rows.
@@ -788,6 +837,36 @@ mod tests {
 	#[cfg(feature = "threadteam")]
 	const M5: &Rates = &Rates::AARCH64_APPLE;
 
+	/// The weight of a scalar picks the rate of the family's kind: a scalar priced at 12 times
+	/// `f64` on products and 2.5 times on memory-bound work (about double-double, design
+	/// document §8) takes those multiples, and the default weight is `f64`'s.
+	#[test]
+	fn the_weight_follows_the_bound_of_the_family() {
+		let w = CostWeight {
+			compute: 12.0,
+			memory: 2.5,
+		};
+		let g = rate::gemm_mac();
+		let s = rate::lu_swap();
+		assert_eq!(g.bound, Bound::Compute);
+		assert_eq!(s.bound, Bound::Memory);
+		assert_eq!(g.weight(w), 12.0);
+		assert_eq!(s.weight(w), 2.5);
+		assert_eq!(g.weight(CostWeight::F64), 1.0);
+		// every native weight is the one colmat-rs used
+		assert_eq!(<f64 as ComplexField>::COST, CostWeight::F64);
+		assert_eq!(<c64 as ComplexField>::COST, CostWeight::F64);
+		assert_eq!(<f32 as ComplexField>::COST, CostWeight::F32);
+		assert_eq!(<crate::c32 as ComplexField>::COST, CostWeight::F32);
+		// the generic row keeps the kind of each family
+		for ((name, a), (_, b)) in entries(&Rates::GENERIC)
+			.into_iter()
+			.zip(entries(&Rates::AARCH64_APPLE))
+		{
+			assert_eq!(a.bound, b.bound, "{name}");
+		}
+	}
+
 	#[test]
 	fn seq_never_pays() {
 		assert_eq!(ParShape::Seq.dispatch_cost(nz(4)), Duration::MAX);
@@ -935,9 +1014,15 @@ mod tests {
 			assert_eq!(Rates::for_class(c), &Rates::GENERIC, "{}", c.name());
 		}
 		// the rows are the measured ones
-		assert_eq!(Rates::X86_64_AVX512.gemm_mac, r(0.0641, 0.2565));
-		assert_eq!(Rates::AARCH64_APPLE.gemm_mac, r(0.037, 0.165));
-		assert_eq!(Rates::AARCH64_APPLE.bidiag_svd_dc, r(53.0, 53.0));
+		assert_eq!(
+			Rates::X86_64_AVX512.gemm_mac,
+			Rate::compute(0.0641, 0.2565)
+		);
+		assert_eq!(Rates::AARCH64_APPLE.gemm_mac, Rate::compute(0.037, 0.165));
+		assert_eq!(
+			Rates::AARCH64_APPLE.bidiag_svd_dc,
+			Rate::compute(53.0, 53.0)
+		);
 	}
 
 	#[test]
@@ -1208,12 +1293,12 @@ mod tests {
 		let r = rate::bidiag();
 		assert_eq!(r.of::<f64>(), r.real);
 		assert_eq!(r.of::<c64>(), r.cplx);
-		// until the scalar states its weight, `f32` and `c32` take the `f64` and `c64` rate
-		assert_eq!(r.of::<f32>(), r.real);
-		assert_eq!(r.of::<crate::c32>(), r.cplx);
+		assert_eq!(r.of::<f32>(), r.real / 2.0);
+		assert_eq!(r.of::<crate::c32>(), r.cplx / 2.0);
 		// the complex rate of the product is 4.5 times the real one, not 1: the floor bug of the
 		// colmat-rs team route
 		let g = rate::gemm_mac();
+		assert_eq!(g.of::<f32>(), g.real / 2.0);
 		assert!(g.of::<c64>() > 4.0 * g.of::<f64>());
 	}
 
