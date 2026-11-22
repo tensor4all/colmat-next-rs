@@ -28,7 +28,7 @@ This file only records what is specific to `colmat-next-rs`:
 None. Miri runs nightly over the lib tests and doctests of `colmat-traits` and `colmat-core` (`heavy-tests.yml`),
 once under Stacked Borrows and once under Tree Borrows (#16); tests that build a threadteam pool are skipped under
 Miri, which does not support the foreign functions the pool calls (#20). Kani proves the harnesses of
-`crates/colmat-core/src/kani_proofs.rs` nightly (#17, a trial: `cargo kani -p colmat-core`, kani-verifier 0.68.0). None of these runs in the
+`crates/colmat-core/src/kani_proofs.rs` nightly (#17, a trial: `cargo kani -p colmat-core`, kani-verifier 0.68.0), on an arm64 runner because Kani cannot build `pulp`'s x86-64 global assembly (#21). None of these runs in the
 push/PR pipeline: they need nightly toolchains and exceed the CI budget. The property tests (`prop_*`) run 256 cases per PR and 65 536 nightly
 (`PROPTEST_CASES`). Mutation testing (`cargo mutants -p colmat-traits --profile ci`) runs weekly and on demand
 (`mutants.yml`) and does not gate merges; a surviving mutant gets a test, or an exclusion with its reason.
