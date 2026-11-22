@@ -9,6 +9,8 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- CI (#21): the nightly `kani` job runs on `ubuntu-24.04-arm`. On x86-64 it could not build:
+  `pulp`'s build script emits global assembly there, which Kani does not support.
 - `colmat-traits` (#10): complex `sqrt` no longer loses the smaller component when `|im| ≪ |re|`
   (Kahan's method), and complex `recip` no longer flushes to zero for `|z|` near the overflow
   threshold. Both defects were inherited from colmat-rs.

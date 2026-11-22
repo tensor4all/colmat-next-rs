@@ -99,9 +99,12 @@ jobs:
   # every input within each harness's bound (`crates/colmat-core/src/kani_proofs.rs`). Kani does not
   # model unwinding or Stacked/Tree Borrows, which stay with the Miri jobs above. The version is
   # pinned so that a new Kani release cannot change the result on its own.
+  # arm64, not x86-64 (#21): on x86-64 `pulp`'s build script emits a `global_asm!` block (masked
+  # AVX load/store stubs), which Kani refuses to build. aarch64 has none, and the index arithmetic
+  # under proof has no architecture-specific code, so no `--ignore-global-asm` is needed.
   kani:
     name: Kani proofs (colmat-core)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
