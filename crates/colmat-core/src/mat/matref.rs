@@ -1639,7 +1639,7 @@ impl<
 					this.nrows(),
 					this.ncols(),
 				);
-				crate::layout::copy_across_layouts(
+				crate::layout::copy_across_layouts_serial(
 					out.as_mut().as_dyn_stride_mut().as_dyn_mut(),
 					src.as_dyn_stride().as_dyn(),
 				);

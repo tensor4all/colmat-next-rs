@@ -1,14 +1,26 @@
-//! Matrix views, iteration and layout copies for colmat-next (trial).
+//! Matrix views, iteration, layout copies and the execution layer for colmat-next (trial).
 //!
 //! This crate holds the view layer of the trial (design record §4): owned
 //! matrices and vectors ([`Mat`], [`Col`], [`Row`]), their borrowed views
 //! ([`MatRef`], [`MatMut`], …), diagonal and permutation matrices
 //! ([`diag`], [`perm`]), element-wise iteration over several views of the
-//! same shape ([`zip!`]), and serial copies between layouts ([`layout`]).
+//! same shape ([`zip!`]), and copies between layouts ([`layout`]).
 //!
-//! It has no parallel route and no kernels: parallel traversal, the
-//! workspace contract and the matrix product come in later steps of the
-//! design record (§7), on top of these types.
+//! It also holds the execution layer (#20):
+//!
+//! - [`Par`], the exclusive right to run on a team, and its `Copy` shape
+//!   [`ParShape`] for queries;
+//! - the team skeletons ([`utils::thread`]: joins, splits, and item loops
+//!   over a [`Producer`](utils::thread::Producer) such as the chunks of a
+//!   view), and the route onto a threadteam team (`utils::team`, feature
+//!   `threadteam`, on by default);
+//! - the cost model that decides a region's width ([`utils::cost`]), priced
+//!   per scalar through [`ComplexField::COST`];
+//! - the static partitions of a region ([`utils::partition`]);
+//! - the caller-owned workspace ([`workspace`]).
+//!
+//! The matrix product and its kernels come in the next step of the design
+//! record (§7).
 //!
 //! # The view invariant
 //!
@@ -216,6 +228,21 @@ macro_rules! __transpose_impl {
 /// assert_eq!(matrix[(2, 2)], 11.0);
 /// assert_eq!(matrix[(3, 2)], 12.0);
 /// ```
+///
+/// With `@alloc`, a temporary matrix from a [`workspace::MemStack`] instead (the drivers' form;
+/// the stack variable is rebound to what is left of the stack). `uninit` needs the caller's
+/// `unsafe` and the contract of [`workspace::temp_mat_uninit`]:
+///
+/// ```
+/// use colmat_core::mat;
+/// use colmat_core::workspace::{MemBuffer, MemStack, temp_mat_scratch};
+/// let mut buf = MemBuffer::new(temp_mat_scratch::<f64>(3, 2));
+/// let stack = MemStack::new(&mut buf);
+/// mat!(@alloc (stack) (mut tmp) (zero::<f64>, 3, 2));
+/// tmp[(2, 1)] = 1.0;
+/// assert_eq!(tmp[(0, 0)], 0.0);
+/// let _ = stack;
+/// ```
 #[macro_export]
 macro_rules! mat {
     () => {
@@ -238,6 +265,22 @@ macro_rules! mat {
             })
         }
     };
+    (
+        @alloc $($unsafe:ident)? ($stack:ident) ($var:pat) (uninit::<$ty:ty>, $($arg:expr),+ $(,)?)
+    ) => {
+        #[allow(clippy::macro_metavars_in_unsafe)] // the caller writes `unsafe` and owns the contract
+        let (mut __mat__, $stack) = $($unsafe)? {
+            $crate::workspace::temp_mat_uninit::<$ty, _, _>($($arg,)* $stack)
+        };
+        let $var = $crate::mat::AsMatMut::as_mat_mut(&mut __mat__);
+    };
+    (
+        @alloc ($stack:ident) ($var:pat) (zero::<$ty:ty>, $($arg:expr),+ $(,)?)
+    ) => {
+        let (mut __mat__, $stack) =
+            $crate::workspace::temp_mat_zeroed::<$ty, _, _>($($arg,)* $stack);
+        let $var = $crate::mat::AsMatMut::as_mat_mut(&mut __mat__);
+    };
 }
 
 /// creates a [`col::Col`] containing the arguments
@@ -250,6 +293,8 @@ macro_rules! mat {
 /// assert_eq!(col_vec[2], 7.0);
 /// assert_eq!(col_vec[3], 9.0);
 /// ```
+///
+/// With `@alloc`, a temporary column from a [`workspace::MemStack`], as for [`mat!`].
 #[macro_export]
 macro_rules! col {
     ($($v:expr),* $(,)?) => {
@@ -266,6 +311,22 @@ macro_rules! col {
             })
         }
     };
+    (
+        @alloc $($unsafe:ident)? ($stack:ident) ($var:pat) (uninit::<$ty:ty>, $($arg:expr),+ $(,)?)
+    ) => {
+        #[allow(clippy::macro_metavars_in_unsafe)] // the caller writes `unsafe` and owns the contract
+        let (mut __mat__, $stack) = $($unsafe)? {
+            $crate::workspace::temp_mat_uninit::<$ty, _, _>($($arg,)* 1, $stack)
+        };
+        let $var = $crate::mat::AsMatMut::as_mat_mut(&mut __mat__).col_mut(0);
+    };
+    (
+        @alloc ($stack:ident) ($var:pat) (zero::<$ty:ty>, $($arg:expr),+ $(,)?)
+    ) => {
+        let (mut __mat__, $stack) =
+            $crate::workspace::temp_mat_zeroed::<$ty, _, _>($($arg,)* 1, $stack);
+        let $var = $crate::mat::AsMatMut::as_mat_mut(&mut __mat__).col_mut(0);
+    };
 }
 
 /// creates a [`row::Row`] containing the arguments
@@ -278,6 +339,8 @@ macro_rules! col {
 /// assert_eq!(row_vec[2], 7.0);
 /// assert_eq!(row_vec[3], 9.0);
 /// ```
+///
+/// With `@alloc`, a temporary row from a [`workspace::MemStack`], as for [`mat!`].
 #[macro_export]
 macro_rules! row {
     ($($v:expr),* $(,)?) => {
@@ -294,6 +357,58 @@ macro_rules! row {
             })
         }
     };
+    (
+        @alloc $($unsafe:ident)? ($stack:ident) ($var:pat) (uninit::<$ty:ty>, $($arg:expr),+ $(,)?)
+    ) => {
+        #[allow(clippy::macro_metavars_in_unsafe)] // the caller writes `unsafe` and owns the contract
+        let (mut __mat__, $stack) = $($unsafe)? {
+            $crate::workspace::temp_mat_uninit::<$ty, _, _>($($arg,)* 1, $stack)
+        };
+        let $var = $crate::mat::AsMatMut::as_mat_mut(&mut __mat__).col_mut(0).transpose_mut();
+    };
+    (
+        @alloc ($stack:ident) ($var:pat) (zero::<$ty:ty>, $($arg:expr),+ $(,)?)
+    ) => {
+        let (mut __mat__, $stack) =
+            $crate::workspace::temp_mat_zeroed::<$ty, _, _>($($arg,)* 1, $stack);
+        let $var = $crate::mat::AsMatMut::as_mat_mut(&mut __mat__).col_mut(0).transpose_mut();
+    };
+}
+
+/// A zero-filled temporary matrix in stack memory of this frame, of compile-time capacity
+/// `A x N` (default: the dimensions themselves), for drivers that need a small fixed-size
+/// temporary without a [`workspace::MemStack`] from the caller. Binds `$name` to a
+/// [`MatMut`].
+///
+/// ```
+/// colmat_core::stack_mat!(tmp, 3, 2, f64);
+/// tmp[(2, 1)] = 1.0;
+/// assert_eq!(tmp[(0, 0)], 0.0);
+/// assert_eq!(tmp.shape(), (3, 2));
+/// ```
+///
+/// # Panics
+///
+/// Panics if `$m > $A` or `$n > $N`.
+#[macro_export]
+macro_rules! stack_mat {
+	($name:ident, $m:expr, $n:expr, $A:expr, $N:expr, $T:ty $(,)?) => {
+		let mut __tmp = {
+			#[repr(align(64))]
+			struct __Col<T, const A: usize>([T; A]);
+			struct __Mat<T, const A: usize, const N: usize>([__Col<T, A>; N]);
+			::core::mem::MaybeUninit::<__Mat<$T, $A, $N>>::uninit()
+		};
+		let __stack = $crate::workspace::MemStack::new_any(
+			::core::slice::from_mut(&mut __tmp),
+		);
+		let mut $name =
+			$crate::workspace::temp_mat_zeroed::<$T, _, _>($m, $n, __stack).0;
+		let mut $name = $crate::mat::AsMatMut::as_mat_mut(&mut $name);
+	};
+	($name:ident, $m:expr, $n:expr, $T:ty $(,)?) => {
+		$crate::stack_mat!($name, $m, $n, $m, $n, $T)
+	};
 }
 
 /// convenience function to concatenate a nested list of matrices into a single
@@ -380,15 +495,19 @@ mod eq;
 pub mod layout;
 /// rectangular matrix
 pub mod mat;
+mod par;
 /// permutation matrix
 pub mod perm;
 /// row vector
 pub mod row;
 /// helper utilities
 pub mod utils;
+pub mod workspace;
 /// element-wise iteration over several views of the same shape
 pub mod zip;
 
+#[cfg(all(test, feature = "std"))]
+mod execution_tests;
 #[cfg(all(test, feature = "std"))]
 mod exhaustive_tests;
 #[cfg(kani)]
@@ -741,6 +860,7 @@ impl Conj {
 
 pub use col::{Col, ColMut, ColRef};
 pub use mat::{Mat, MatMut, MatRef, MatUninitMut};
+pub use par::{Par, ParShape};
 pub use row::{Row, RowMut, RowRef};
 
 #[allow(unused_imports, dead_code)]
@@ -796,7 +916,7 @@ mod internal_prelude {
 
 /// useful imports for general usage of the library
 pub mod prelude {
-	pub use super::{c32, c64, col, mat, row, unzip, zip};
+	pub use super::{Par, ParShape, c32, c64, col, mat, row, unzip, zip};
 	pub use col::{Col, ColMut, ColRef};
 	pub use mat::{Mat, MatMut, MatRef, MatUninitMut};
 	pub use reborrow::{IntoConst, Reborrow, ReborrowMut};
@@ -849,6 +969,7 @@ mod into_range {
 }
 
 pub extern crate colmat_traits as traits;
+pub extern crate dyn_stack;
 #[doc(hidden)]
 pub extern crate generativity;
 pub extern crate num_complex as complex;

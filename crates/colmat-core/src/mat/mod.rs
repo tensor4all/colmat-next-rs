@@ -51,10 +51,12 @@ fn from_slice_assert(nrows: usize, ncols: usize, len: usize) {
 	let size = usize::checked_mul(nrows, ncols);
 	assert!(size == Some(len));
 }
+mod chunks;
 mod mat_index;
 pub(crate) mod matmut;
 pub(crate) mod matown;
 pub(crate) mod matref;
+pub use chunks::{ColChunks, ColChunksMut, RowChunks, RowChunksMut};
 pub use matmut::Mut;
 pub use matmut::UninitMut;
 pub use matown::Own;

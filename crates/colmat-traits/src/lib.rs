@@ -13,6 +13,10 @@
 //!   registers). [`NoSimd`] is the one-lane provider built on S0 alone;
 //!   [`NativeSimd`] serves `f32` and `f64`; [`ComplexSimd`] derives the complex
 //!   provider from the real one through [`SimdPairs`].
+//! - **S3, optional.** [`ComplexField::COST`] states the type's
+//!   [`CostWeight`] against `f64`, which the cost model of `colmat-core`
+//!   multiplies its measured rates by. The default prices the type as `f64`.
+//!   (S2, the kernel hooks, live with the kernels.)
 //!
 //! Dispatch is by capability, never by type identity: nothing here branches on
 //! `TypeId`, `size_of` or "is this `f64`" constants.
@@ -32,6 +36,7 @@
 #![allow(non_camel_case_types)]
 
 mod conjugate;
+mod cost;
 mod index;
 pub mod math_utils;
 mod ops;
@@ -42,6 +47,7 @@ mod simd;
 mod test_support;
 
 pub use conjugate::{ComplexConj, Conjugate, Real};
+pub use cost::CostWeight;
 pub use index::{Index, IndexCore, Seal, SignedIndex};
 pub use num_complex::Complex;
 pub use ops::{

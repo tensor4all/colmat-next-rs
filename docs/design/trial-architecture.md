@@ -104,13 +104,24 @@ until recorded in meta.
   adapter crates.
 - **Cost.** A hook's provider declares its rate per kernel family. The cost model reads the row of
   the selected (host class, scalar, kernel), with a ratio to `f64` as fallback. Block sizes and
-  recursion crossovers are derived from the same row, not from literals in drivers.
+  recursion crossovers are derived from the same row, not from literals in drivers. The fallback
+  ratio is implemented in `colmat-traits` (#20): the scalar states a `CostWeight` (one weight for
+  compute-bound and one for memory-bound families, meta §8) as `ComplexField::COST`, an associated
+  constant whose default is `f64`'s, so a new scalar writes nothing unless it wants a different
+  price; `f32` and `c32` declare half. Each family of the rate table is tagged compute- or
+  memory-bound. The per-kernel rows come with the kernel hooks.
 - **Precision.** `Precision { eps, safe_min, safe_max }` is required; values are the type's own.
   A kernel that changes the accumulation algorithm (packed Dot2, Ozaki-type split) documents its
   error bound and valid range against the generic operation it replaces (meta §5, §7).
 - **Workspace.** Meta §6 "Caller-owned workspace" as written: query and execution agree on the
   path, no heap or thread-local allocation during execution, capacity errors before outputs change.
-  Solvers take scratch, so iterative refinement does not allocate per step.
+  Solvers take scratch, so iterative refinement does not allocate per step. Until meta §11
+  question 3 settles the error type, an insufficient stack panics at entry, before any output is
+  written (#20).
+- **Execution.** `Par::Team` wraps a threadteam token, behind `colmat-core`'s `threadteam` feature
+  (meta §7a's layout puts `threadteam` under `colmat-core`). The team skeletons deal a
+  `colmat-core` trait (`utils::thread::Producer`) rather than rayon's producer (debt K7), so the
+  view types and the skeletons name no rayon item (#20).
 - **Drivers.** Factorisations call primitives and shared leaves only. Panel leaves (pivot search
   plus rank-1/2 update), layout copies and the cost queries are public items of `colmat-core` or
   `colmat`, so an alternative driver or an algorithm outside the crate can reuse them. An

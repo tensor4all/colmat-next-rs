@@ -13,7 +13,9 @@ This file only records what is specific to `colmat-next-rs`:
 - **MSRV**: 1.89 (`rust-version` in the workspace `Cargo.toml`, matching colmat-rs). The `msrv` job in
   `.github/workflows/ci.yml` checks it with `RUSTUP_TOOLCHAIN`, because `rust-toolchain.toml` pins the lint
   and test toolchain (1.96.0). `rustfmt.toml` is the stable subset of colmat-rs's settings.
-- **Feature combinations CI builds**: default features, and `--all-features` for clippy and rustdoc.
+- **Feature combinations CI builds**: default features (for `colmat-core`, `std` and `threadteam`), and
+  `--all-features` for clippy and rustdoc; `colmat-core` also with no features (`cargo check`) and with `std` only
+  (clippy over all targets), in the `deny` job (#20).
 - **Platforms claimed**: `ubuntu-latest` and `macos-latest` (tests); rustdoc, clippy and `deny` run on Linux only.
 - **Local gate**: `cargo test --workspace --profile ci` once a crate exists.
 - **CI time budget**: the push/PR pipeline has one total budget (`CI_BUDGET_MINUTES` in `.github/workflows/ci.yml`).
@@ -24,7 +26,8 @@ This file only records what is specific to `colmat-next-rs`:
 ## Anything here that departs from the shared rules
 
 None. Miri runs nightly over the lib tests and doctests of `colmat-traits` and `colmat-core` (`heavy-tests.yml`),
-once under Stacked Borrows and once under Tree Borrows (#16), and Kani proves the harnesses of
+once under Stacked Borrows and once under Tree Borrows (#16); tests that build a threadteam pool are skipped under
+Miri, which does not support the foreign functions the pool calls (#20). Kani proves the harnesses of
 `crates/colmat-core/src/kani_proofs.rs` nightly (#17, a trial: `cargo kani -p colmat-core`, kani-verifier 0.68.0). None of these runs in the
 push/PR pipeline: they need nightly toolchains and exceed the CI budget. The property tests (`prop_*`) run 256 cases per PR and 65 536 nightly
 (`PROPTEST_CASES`). Mutation testing (`cargo mutants -p colmat-traits --profile ci`) runs weekly and on demand

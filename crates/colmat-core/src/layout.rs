@@ -11,16 +11,20 @@
 //! 93-217 and 225-600: `COPY_TILE`, `TILE_COPY_CACHE_BYTES`,
 //! `TILE_COPY_POWER_OF_TWO_STRIDE_BYTES`, `tile_copy_pays`,
 //! `copy_across_layouts`, `copy_across_layouts_block`,
-//! `copy_lower_across_layouts`). Changed: the serial path only, and
-//! `copy_across_layouts` is crate-private until it takes `Par`. The parallel
-//! split of `copy_across_layouts` (and its `Par` argument) depends on the
-//! execution layer and is left for the next step of the design record (§7);
-//! `column_major_copy` is left with it. The thresholds and the measurements
+//! `copy_lower_across_layouts`) and lines 216-277 (`copy_tasks`, the parallel
+//! split of `copy_across_layouts`, #20). Changed: `copy_across_layouts` is
+//! public and takes any `T: Clone`; its split deals the chunks through
+//! [`crate::utils::thread::for_each`] instead of rayon; `column_major_copy`
+//! (a heap allocation inside a driver, debt D3) and `copy_columns_into` are
+//! left for the drivers; `copy_lower_across_layouts` stays serial and
+//! crate-private (it has no caller here yet). The thresholds and the measurements
 //! they cite are colmat-rs's (the `tensor4all/faer` issue numbers are
 //! colmat-rs's former repository) and have not been re-measured here. faer's
 //! MIT notice: `LICENSE-faer`.
 
+use crate::Par;
 use crate::mat::{MatMut, MatRef};
+use crate::utils::thread::Producer;
 use reborrow::*;
 
 /// The side of the tiles the layout copies move: 16 elements is a cache line
@@ -88,19 +92,88 @@ pub fn tile_copy_pays<T>(
 		&& row_stride_bytes.is_power_of_two()
 }
 
-/// Copies `src` into `dst` elementwise, where the two have transposed
-/// strides: one is column-major (row stride `±1`), the other is not, over the
-/// same shape, in tiles.
+/// How a copy over `lines` lines of the destination's major dimension is shared
+/// between at most `degree` threads: `(lines per task, tasks)`, each share a
+/// whole number of tiles except the last.
+pub(crate) fn copy_tasks(lines: usize, degree: usize) -> (usize, usize) {
+	let tiles = lines.div_ceil(COPY_TILE);
+	let n_tasks = Ord::min(degree, tiles).max(1);
+	let chunk = tiles.div_ceil(n_tasks) * COPY_TILE;
+	(chunk, lines.div_ceil(chunk.max(1)))
+}
+
+/// Copies `src` into `dst`, where the two have transposed strides: one is
+/// column-major (row stride `±1`), the other is not, over the same shape, in
+/// [`COPY_TILE`] tiles. Any other pair of layouts is copied correctly too,
+/// only without the benefit of the tiles.
+///
+/// With a parallel `par` the copy is split along the destination's major
+/// dimension (rows when `dst` is row-major, columns when it is column-major)
+/// in whole tiles, so each participant writes whole contiguous lines of its
+/// own and two participants meet in a cache line only at the edge of their
+/// shares. A split along the other dimension gives a participant a few
+/// elements of every line, and on a narrow matrix several participants write
+/// the same line. The split uses every participant of `par` that gets at
+/// least one tile; it is not gated by the cost model (as in colmat-rs).
+///
+/// ```
+/// use colmat_core::{Mat, Par, layout::copy_across_layouts};
+/// let src = Mat::<f64>::from_fn(40, 30, |i, j| (100 * i + j) as f64);
+/// let mut dst = Mat::<f64>::zeros(30, 40);
+/// // `dst.transpose_mut()` is row-major, `src` column-major
+/// copy_across_layouts(dst.as_mut().transpose_mut(), src.as_ref(), Par::Seq);
+/// assert!(dst.transpose() == src.as_ref());
+/// ```
 ///
 /// # Panics
 ///
 /// Panics if the shapes differ.
-///
-/// Crate-private while it is serial only: the public entry takes a `Par`
-/// argument and is added with the execution layer (design record §7, step 2),
-/// so that no serial-only public name has to be broken then.
 #[track_caller]
-pub(crate) fn copy_across_layouts<T: Clone>(
+pub fn copy_across_layouts<T: Clone + Send + Sync>(
+	mut dst: MatMut<'_, T>,
+	src: MatRef<'_, T>,
+	par: Par,
+) {
+	equator::assert!(all(
+		dst.nrows() == src.nrows(),
+		dst.ncols() == src.ncols(),
+	));
+	let dst_row_major = dst.row_stride().unsigned_abs() != 1;
+	let lines = if dst_row_major {
+		dst.nrows()
+	} else {
+		dst.ncols()
+	};
+	let (chunk, n_tasks) = copy_tasks(lines, par.degree());
+	if n_tasks > 1 {
+		if dst_row_major {
+			let chunks = dst
+				.rb_mut()
+				.par_row_chunks_mut(chunk)
+				.zip_eq(src.par_row_chunks(chunk));
+			debug_assert!(chunks.len() == n_tasks);
+			crate::utils::thread::for_each(par, n_tasks, chunks, |(d, s)| {
+				copy_across_layouts_block(d, s)
+			});
+		} else {
+			let chunks = dst
+				.rb_mut()
+				.par_col_chunks_mut(chunk)
+				.zip_eq(src.par_col_chunks(chunk));
+			debug_assert!(chunks.len() == n_tasks);
+			crate::utils::thread::for_each(par, n_tasks, chunks, |(d, s)| {
+				copy_across_layouts_block(d, s)
+			});
+		}
+		return;
+	}
+	copy_across_layouts_block(dst, src);
+}
+
+/// [`copy_across_layouts`] on the calling thread, for any `T: Clone` (a view's `to_owned`,
+/// which has no `Par` and no `Send` bound).
+#[track_caller]
+pub(crate) fn copy_across_layouts_serial<T: Clone>(
 	dst: MatMut<'_, T>,
 	src: MatRef<'_, T>,
 ) {
