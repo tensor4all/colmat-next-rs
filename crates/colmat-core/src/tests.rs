@@ -348,9 +348,9 @@ proptest! {
 		let buf = buffer(len);
 		let src = view(&buf, &md);
 		let mut cm = Mat::<f64>::zeros(m, n);
-		copy_across_layouts(cm.as_mut(), src);
+		copy_across_layouts(cm.as_mut(), src, crate::Par::Seq);
 		let mut rm_t = Mat::<f64>::zeros(n, m);
-		copy_across_layouts(rm_t.as_mut().transpose_mut(), src);
+		copy_across_layouts(rm_t.as_mut().transpose_mut(), src, crate::Par::Seq);
 		for j in 0..n {
 			for i in 0..m {
 				prop_assert_eq!(cm[(i, j)], md.off(i, j) as f64);

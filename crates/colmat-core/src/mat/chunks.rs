@@ -3,7 +3,7 @@
 //! The replacement of colmat-rs's rayon iterators of the views (`par_col_chunks`,
 //! `par_row_chunks` and their `_mut` forms, `faer/src/mat/matref.rs` and `matmut.rs` at
 //! `71337cdc`): the same names and chunk boundaries, but the value is a [`Producer`] of this
-//! crate, which `utils::thread::for_each` splits on the leader of a team
+//! crate, which [`for_each`](crate::utils::thread::for_each) splits on the leader of a team
 //! (debt K7). The `par_*_iter` and `par_*_partition` forms are not ported yet. faer's MIT
 //! notice: `LICENSE-faer`.
 
@@ -43,7 +43,7 @@ impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride>
 	MatRef<'a, T, Rows, Cols, RStride, CStride>
 {
 	/// The columns of this matrix in chunks of `chunk_size` columns, the last one possibly
-	/// narrower, as a [`Producer`] for `utils::thread::for_each`.
+	/// narrower, as a [`Producer`] for [`for_each`](crate::utils::thread::for_each).
 	///
 	/// # Panics
 	///
@@ -62,7 +62,7 @@ impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride>
 	}
 
 	/// The rows of this matrix in chunks of `chunk_size` rows, the last one possibly
-	/// shorter, as a [`Producer`] for `utils::thread::for_each`.
+	/// shorter, as a [`Producer`] for [`for_each`](crate::utils::thread::for_each).
 	///
 	/// # Panics
 	///

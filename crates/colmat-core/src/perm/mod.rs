@@ -1,5 +1,7 @@
 //! Ported from colmat-rs `faer/src/perm/` (`mod.rs`, `permref.rs`, `permown.rs`) at `71337cdc`.
-//! Changed: the in-place permutations and their scratch queries (which need the workspace contract) were removed; every unsafe block carries a `// SAFETY:` comment.
+//! Changed: every unsafe block carries a `// SAFETY:` comment; the in-place permutations
+//! (restored in #20 with the workspace) check the stack before they write and copy into the
+//! temporary without forming references to its uninitialised elements.
 //! The soundness defects inherited from colmat-rs (see
 //! `docs/worklogs/2026-11-20-colmat-core-views-port.md`) are fixed (#14).
 //! faer's MIT notice: `LICENSE-faer`.
@@ -311,4 +313,122 @@ pub fn permute_rows<I: Index, T: ComplexField>(
 		}
 	}
 	implementation(dst, src, perm_indices.canonicalized())
+}
+
+/// computes the layout of required workspace for applying a row permutation to
+/// a matrix in place
+pub fn permute_rows_in_place_scratch<I: Index, T: ComplexField>(
+	nrows: usize,
+	ncols: usize,
+) -> crate::workspace::StackReq {
+	crate::workspace::temp_mat_scratch::<T>(nrows, ncols)
+}
+
+/// computes the layout of required workspace for applying a column permutation
+/// to a matrix in place
+pub fn permute_cols_in_place_scratch<I: Index, T: ComplexField>(
+	nrows: usize,
+	ncols: usize,
+) -> crate::workspace::StackReq {
+	crate::workspace::temp_mat_scratch::<T>(nrows, ncols)
+}
+
+/// computes a permutation of the rows of the matrix using the given
+/// permutation, and stores the result in the same matrix
+///
+/// # panics
+///
+/// - panics if the size of the permutation doesn't match the number of rows of
+///   the matrix
+/// - panics if `stack` cannot hold
+///   [`permute_rows_in_place_scratch`]`::<I, T>(matrix.nrows(), matrix.ncols())`; the matrix is
+///   unchanged then
+#[inline]
+#[track_caller]
+pub fn permute_rows_in_place<I: Index, T: ComplexField>(
+	matrix: MatMut<'_, T>,
+	perm_indices: PermRef<'_, I>,
+	stack: &mut crate::workspace::MemStack,
+) {
+	#[track_caller]
+	fn implementation<T: ComplexField, I: Index>(
+		mut matrix: MatMut<'_, T>,
+		perm_indices: PermRef<'_, I>,
+		stack: &mut crate::workspace::MemStack,
+	) {
+		Assert!(perm_indices.len() == matrix.nrows());
+		let (m, n) = matrix.shape();
+		// SAFETY: `copy_into_uninit` writes every element of `tmp` before it is read.
+		let (mut tmp, _) = unsafe {
+			crate::workspace::temp_mat_uninit::<T, usize, usize>(m, n, stack)
+		};
+		let mut tmp = tmp.as_mat_mut();
+		copy_into_uninit(tmp.rb_mut(), matrix.rb());
+		permute_rows(matrix.rb_mut(), tmp.rb(), perm_indices);
+	}
+	implementation(matrix, perm_indices.canonicalized(), stack)
+}
+
+/// computes a permutation of the columns of the matrix using the given
+/// permutation, and stores the result in the same matrix.
+///
+/// # panics
+///
+/// - panics if the size of the permutation doesn't match the number of columns
+///   of the matrix
+/// - panics if `stack` cannot hold
+///   [`permute_cols_in_place_scratch`]`::<I, T>(matrix.nrows(), matrix.ncols())`; the matrix is
+///   unchanged then
+#[inline]
+#[track_caller]
+pub fn permute_cols_in_place<I: Index, T: ComplexField>(
+	matrix: MatMut<'_, T>,
+	perm_indices: PermRef<'_, I>,
+	stack: &mut crate::workspace::MemStack,
+) {
+	#[track_caller]
+	fn implementation<I: Index, T: ComplexField>(
+		mut matrix: MatMut<'_, T>,
+		perm_indices: PermRef<'_, I>,
+		stack: &mut crate::workspace::MemStack,
+	) {
+		Assert!(perm_indices.len() == matrix.ncols());
+		let (m, n) = matrix.shape();
+		// SAFETY: `copy_into_uninit` writes every element of `tmp` before it is read.
+		let (mut tmp, _) = unsafe {
+			crate::workspace::temp_mat_uninit::<T, usize, usize>(m, n, stack)
+		};
+		let mut tmp = tmp.as_mat_mut();
+		copy_into_uninit(tmp.rb_mut(), matrix.rb());
+		permute_cols(matrix.rb_mut(), tmp.rb(), perm_indices);
+	}
+	implementation(matrix, perm_indices.canonicalized(), stack)
+}
+
+/// Copies `src` into the temporary `dst` of [`crate::workspace::temp_mat_uninit`]: through
+/// assignment when `T` needs drop (the temporary is then initialised, and the old value must be
+/// dropped), else by raw writes, so no reference to an uninitialised element is formed.
+fn copy_into_uninit<T: ComplexField>(
+	mut dst: MatMut<'_, T>,
+	src: MatRef<'_, T>,
+) {
+	DebugAssert!(all(dst.nrows() == src.nrows(), dst.ncols() == src.ncols()));
+	if core::mem::needs_drop::<T>() {
+		dst.copy_from(src);
+		return;
+	}
+	let (m, n) = src.shape();
+	let (rs, cs) = (dst.row_stride(), dst.col_stride());
+	let ptr = dst.as_ptr_mut();
+	for j in 0..n {
+		for i in 0..m {
+			// SAFETY: `i < m`, `j < n` index `dst`, whose view invariant covers the element at
+			// that offset (valid for writes, borrowed exclusively); `write` does not read or
+			// drop the old, possibly uninitialised, value.
+			unsafe {
+				ptr.offset(i as isize * rs + j as isize * cs)
+					.write(src[(i, j)].copy())
+			};
+		}
+	}
 }

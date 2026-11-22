@@ -23,6 +23,8 @@ dyn-stack = { version = "0.13.2", default-features = false, features = ["core-er
 equator = "0.6.0"
 generativity = "1.1.0"
 reborrow = "0.5.5"
+# The only crate that starts threads (`deny.toml`); its default `parallel` feature brings rayon.
+threadteam = "0.6.0"
 
 # Each lint names the failure it prevents (AGENTS.md, "Proportionate safety and validation").
 [workspace.lints.rust]

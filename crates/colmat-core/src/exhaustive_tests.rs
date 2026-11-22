@@ -344,7 +344,11 @@ fn copies_match_elementwise_for_every_pair_of_layouts() {
 				);
 
 				let mut dst = Strided::new(m, n, dl, PAD, |_, _| -2.0);
-				crate::layout::copy_across_layouts(dst.view_mut(), src.view());
+				crate::layout::copy_across_layouts(
+					dst.view_mut(),
+					src.view(),
+					crate::Par::Seq,
+				);
 				assert_buffer(&dst, code, &format!("copy_across_layouts {cx}"));
 
 				let owned = src.view().to_owned();
@@ -361,6 +365,41 @@ fn copies_match_elementwise_for_every_pair_of_layouts() {
 		crate::layout::tiled_copies() > tiled_before,
 		"the tiled triangular path never ran"
 	);
+}
+
+/// The parallel split of `copy_across_layouts` (#20): on teams of 2 to 4 the copy writes
+/// exactly the serial result, in every pair of layouts, at sizes that give each participant one
+/// or several tiles or none, and nothing outside the destination view. Not under Miri: the team
+/// is threads of a pool.
+#[cfg(all(feature = "threadteam", not(miri)))]
+#[test]
+fn parallel_copies_match_elementwise_for_every_pair_of_layouts() {
+	let sizes: &[usize] = &[0, 1, 15, 16, 17, 33, 64, 70];
+	for width in 2..=4 {
+		crate::utils::team::with_team(width, |mut par| {
+			assert!(par.degree() == width);
+			for &m in sizes {
+				for &n in sizes {
+					for dl in layouts(m, n) {
+						for sl in layouts(m, n) {
+							let cx = format!(
+								"width {width}, {m}x{n} dst strides {dl:?} src strides {sl:?}"
+							);
+							let src = Strided::new(m, n, sl, PAD, code);
+							let mut dst =
+								Strided::new(m, n, dl, PAD, |_, _| -2.0);
+							crate::layout::copy_across_layouts(
+								dst.view_mut(),
+								src.view(),
+								par.reborrow(),
+							);
+							assert_buffer(&dst, code, &cx);
+						}
+					}
+				}
+			}
+		});
+	}
 }
 
 #[test]

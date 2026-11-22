@@ -113,7 +113,7 @@ jobs:
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
   deny:
-    name: deny (bans)
+    name: deny (bans, features)
     needs: rust
     if: ${{ needs.rust.outputs.present == 'true' }}
     runs-on: ubuntu-latest
@@ -125,19 +125,32 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.96.0
-      # `deny.toml` lets `threadteam` (and the rayon it wraps) into the workspace; the crates below
-      # the execution layer must not have either at all (design record §2, principle 3; #12).
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # `deny.toml` lets `threadteam` (and the rayon it wraps) into the workspace, through
+      # colmat-core's `threadteam` feature only (#20). `colmat-traits` has neither at all, and
+      # `colmat-core` has neither without that feature (design record §2, principle 3).
       - name: No thread pool below colmat-core's execution layer
         run: |
           set -euo pipefail
-          for crate in colmat-traits colmat-core; do
-            found=$(cargo tree -p "$crate" --all-features -e normal,build,dev --prefix none \
+          check() {
+            found=$(cargo tree "$@" -e normal,build,dev --prefix none \
               | awk '{print $1}' | grep -xE 'rayon|rayon-core|threadteam' | sort -u || true)
             if [ -n "$found" ]; then
-              echo "::error::$crate depends on: $found"
+              echo "::error::cargo tree $* depends on: $found"
               exit 1
             fi
-          done
+          }
+          check -p colmat-traits --all-features
+          check -p colmat-core --no-default-features
+          check -p colmat-core --no-default-features --features std
+      # The feature combinations the gates above do not build: no `std` (and so no team), and
+      # `std` without the parallel route.
+      - name: colmat-core without std, and without threadteam
+        run: |
+          set -euo pipefail
+          cargo check -p colmat-core --no-default-features
+          cargo clippy -p colmat-core --all-targets --no-default-features --features std -- -D warnings
 
   budget:
     name: budget

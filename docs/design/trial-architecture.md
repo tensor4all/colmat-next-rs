@@ -110,7 +110,13 @@ until recorded in meta.
   error bound and valid range against the generic operation it replaces (meta §5, §7).
 - **Workspace.** Meta §6 "Caller-owned workspace" as written: query and execution agree on the
   path, no heap or thread-local allocation during execution, capacity errors before outputs change.
-  Solvers take scratch, so iterative refinement does not allocate per step.
+  Solvers take scratch, so iterative refinement does not allocate per step. Until meta §11
+  question 3 settles the error type, an insufficient stack panics at entry, before any output is
+  written (#20).
+- **Execution.** `Par::Team` wraps a threadteam token, behind `colmat-core`'s `threadteam` feature
+  (meta §7a's layout puts `threadteam` under `colmat-core`). The team skeletons deal a
+  `colmat-core` trait (`utils::thread::Producer`) rather than rayon's producer (debt K7), so the
+  view types and the skeletons name no rayon item (#20).
 - **Drivers.** Factorisations call primitives and shared leaves only. Panel leaves (pivot search
   plus rank-1/2 update), layout copies and the cost queries are public items of `colmat-core` or
   `colmat`, so an alternative driver or an algorithm outside the crate can reuse them. An

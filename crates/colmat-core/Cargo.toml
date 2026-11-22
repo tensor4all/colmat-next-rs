@@ -1,7 +1,7 @@
 [package]
 name = "colmat-core"
 version = "0.0.0"
-description = "Matrix views, element-wise iteration and layout copies for colmat-next (trial)."
+description = "Matrix views, iteration, layout copies and the execution layer (Par, team skeletons, cost model, workspace) for colmat-next (trial)."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -16,13 +16,16 @@ dyn-stack.workspace = true
 equator.workspace = true
 generativity.workspace = true
 reborrow.workspace = true
+threadteam = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
 
 [features]
-default = ["std"]
+default = ["std", "threadteam"]
 std = ["colmat-traits/std", "num-complex/std", "dyn-stack/std"]
+# The parallel route: `Par::Team` runs its regions on a threadteam team (#20).
+threadteam = ["std", "dep:threadteam"]
 
 [lints]
 workspace = true

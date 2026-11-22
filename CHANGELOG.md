@@ -22,6 +22,19 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `colmat-core` (#20): the execution layer, ported from colmat-rs `71337cdc` and restructured. `Par`
+  and `ParShape`; the team skeletons (`utils::thread`: `join_raw`, `join_sized`, `split`,
+  `with_width`, `for_each`, `for_each_with_par`) and the route onto a threadteam team
+  (`utils::team`, feature `threadteam`, default on); the cost model (`utils::cost`, the width rules
+  public); the static partitions (`utils::partition`, public, on every target); the caller-owned
+  workspace (`workspace`: `temp_mat_*`, the `@alloc` arms of `mat!`/`col!`/`row!`, `stack_mat!`)
+  and the in-place permutations. The item loops deal a `utils::thread::Producer` of this crate
+  instead of a rayon iterator; `MatRef::par_col_chunks`/`par_row_chunks` and their `_mut` forms
+  return one. `layout::copy_across_layouts` is public and takes `Par`. A call that takes scratch
+  checks the stack before it writes; an integration test counts allocations across the team.
+  Kani harnesses for the split arithmetic. Work log:
+  `docs/worklogs/2026-11-21-colmat-core-execution-layer.md`.
+
 - `colmat-core` (#17, trial): Kani proof harnesses (`src/kani_proofs.rs`) for the row ranges of the
   triangular `zip!` iterations (every size), the index casts and permutation invariant, and
   `MatRef::split_at`; a nightly `kani` job in `heavy-tests.yml`. The triangular row ranges are now
