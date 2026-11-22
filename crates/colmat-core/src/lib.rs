@@ -390,6 +390,8 @@ pub mod utils;
 pub mod zip;
 
 #[cfg(all(test, feature = "std"))]
+mod execution_tests;
+#[cfg(all(test, feature = "std"))]
 mod exhaustive_tests;
 #[cfg(kani)]
 mod kani_proofs;
