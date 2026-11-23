@@ -11,6 +11,9 @@ All notable changes are recorded here. The format follows
 
 - CI (#21): the nightly `kani` job runs on `ubuntu-24.04-arm`. On x86-64 it could not build:
   `pulp`'s build script emits global assembly there, which Kani does not support.
+- Tests (#21): under Miri, `lower_area_parts_keeps_every_part_non_empty` skips the 2048 and 4096
+  blocks and the 1024 block with `align = 1` (about 28k instead of 2.8M `lower_area_split` calls),
+  so the nightly Miri jobs finish within their 60-minute limit.
 - `colmat-traits` (#10): complex `sqrt` no longer loses the smaller component when `|im| ≪ |re|`
   (Kahan's method), and complex `recip` no longer flushes to zero for `|z|` near the overflow
   threshold. Both defects were inherited from colmat-rs.
