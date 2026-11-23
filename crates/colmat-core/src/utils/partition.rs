@@ -232,6 +232,12 @@ mod tests {
 	/// A part holds at least one aligned column strip, so `parts` at or below
 	/// the cap never leaves one empty. Boundaries are nondecreasing, the first
 	/// is 0 and the last is `n`.
+	///
+	/// Every `parts` up to the cap is checked, so the calls grow as `cap^2 / 2`:
+	/// 4096 x 4096 with `align = 1` alone (cap 2048) makes about 2.1M calls.
+	/// Under Miri that did not finish within the nightly's 60 minutes (#21), so
+	/// Miri skips 2048 and above, and 1024 with `align = 1`: about 28k calls,
+	/// which keep the small sizes, both aligns and 1024 at `align = 8`.
 	#[test]
 	fn lower_area_parts_keeps_every_part_non_empty() {
 		for &(m, n) in &[
@@ -250,6 +256,9 @@ mod tests {
 			(1, 1),
 		] {
 			for align in [1usize, 8] {
+				if cfg!(miri) && (m >= 2048 || (m >= 1024 && align == 1)) {
+					continue;
+				}
 				let cap = lower_area_parts(m, n, align);
 				assert!(cap >= 1, "{m}x{n}/{align}");
 				for parts in 1..=cap {
