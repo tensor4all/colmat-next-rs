@@ -7,6 +7,17 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `colmat-core` (#28): a product on a team cuts its output into the grid of
+  `utils::partition::tile_grid`, as colmat-rs's `gemm_tiled` did, instead of columns or rows only;
+  a tall product no longer packs the whole `lhs` on every participant (`f64` `4096 x 64 x 64` on
+  width 2: 1.26x colmat-rs before, 0.99x after). Above the size of `depth_split`, the
+  column-major matrix-vector product on a team splits its depth instead of its rows, with the
+  partial sums in the caller's scratch (`matmul_scratch` now asks for them). Its result then
+  rounds differently from `Par::Seq`, the same on every call of the same width (design record §5,
+  "Rounding on a team").
+
 ### Fixed
 
 - CI (#21): the nightly `kani` job runs on `ubuntu-24.04-arm`. On x86-64 it could not build:
@@ -37,7 +48,7 @@ All notable changes are recorded here. The format follows
       driver ported from colmat-rs `71337cdc`;
     - `utils::simd` is ported onto `SimdLayout`/`SimdField`, and `Accum` comes with it.
   - The generic kernels (matrix-vector, rank-one, the vertical and horizontal micro-kernels)
-    run for every scalar and split the output, never the depth, on a team.
+    run for every scalar and split the output, never the depth, on a team (changed by #28).
   - The native kernels of `f32`, `f64`, `c32` and `c64`: `nano-gemm` up to `16^3`
     multiply-adds, then `t4a-gemm`, or `t4a-private-gemm-x86` on x86-64 with AVX2/FMA or
     AVX-512F. `apple-sme` is a default feature with runtime detection; AMX is not enabled.

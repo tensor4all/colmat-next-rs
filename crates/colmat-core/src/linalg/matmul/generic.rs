@@ -1,8 +1,9 @@
 //! The generic kernels: every path of the product on a scalar's arithmetic and its SIMD provider.
 //!
 //! [`GenericKernels`] implements [`Gemm`] for every [`ComplexField`] with these, and the driver
-//! uses the vector and rank-one kernels for every scalar. None of them needs scratch or
-//! allocates.
+//! uses the vector and rank-one kernels for every scalar. None of them allocates; only the
+//! depth split of the column-major matrix-vector product takes scratch
+//! (`matvec_colmajor_scratch`).
 //!
 //! Ported from colmat-rs `faer/src/linalg/matmul/mod.rs` at `71337cdc` (`matmul_vertical`,
 //! `matmul_horizontal`, `dot`, `matvec_rowmajor`, `matvec_colmajor`, `rank_update` and the
@@ -14,16 +15,16 @@
 //!   one element), so the separate schoolbook route for non-SIMD types is gone;
 //! - the micro-kernel shape is 2 registers by 2 columns for every scalar (colmat-rs derived it
 //!   from the size of a scalar's unit, which this trial's scalars do not have);
-//! - parallel regions split the output, never the depth, so they need no buffer of partial sums:
-//!   colmat-rs's column-major matrix-vector product split the depth and kept the partial sums in
-//!   a thread-local (`with_partials`), which the workspace contract of this trial forbids
-//!   (design record §5, "Workspace");
+//! - parallel regions split the output, except the column-major matrix-vector product above the
+//!   size of `depth_split` (#28), which splits its depth as colmat-rs did; colmat-rs kept the
+//!   partial sums in a thread-local (`with_partials`), which the workspace contract of this trial
+//!   forbids (design record §5, "Workspace"), so they come from the caller's scratch here;
 //! - the dot product and the kernels run their arithmetic as colmat-rs does (four accumulators
 //!   for a dot product, `KC`/`NC` blocking), so their rounding is the same.
 
 use super::{Accum, Gemm};
 use crate::col::{ColMut, ColRef};
-use crate::mat::{MatMut, MatRef};
+use crate::mat::{AsMatMut, MatMut, MatRef};
 use crate::row::RowRef;
 use crate::utils::bound::Dim;
 use crate::utils::simd::{SimdCtx, SimdOps, dispatch};
@@ -286,8 +287,14 @@ fn matvec_rowmajor_seq<'M, 'K, T: ComplexField>(
 	})
 }
 
-/// `dst ← [dst +] alpha * op(lhs) * op(rhs)` for a column-major `lhs`: one axpy per column. A
-/// team splits the rows, so no partial sums are kept.
+/// `dst ← [dst +] alpha * op(lhs) * op(rhs)` for a column-major `lhs`: one axpy per column.
+///
+/// A team splits the rows while [`depth_split`] says no: each participant runs every axpy on
+/// its rows, so the result is bitwise that of `Par::Seq`. Above that size it splits the depth,
+/// as colmat-rs did: each participant sums its block of columns into its own column of an
+/// `nrows x jobs` buffer taken from `stack` ([`matvec_colmajor_scratch`]), and the columns are
+/// then added to `dst` in order. That result differs from `Par::Seq` in rounding, and is the
+/// same for every call on the same width.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn matvec_colmajor<'M, 'K, T: ComplexField>(
 	dst: ColMut<'_, T, Dim<'M>, ContiguousFwd>,
@@ -298,14 +305,67 @@ pub(crate) fn matvec_colmajor<'M, 'K, T: ComplexField>(
 	conj_rhs: Conj,
 	alpha: &T,
 	par: Par,
+	stack: &mut MemStack,
 ) {
-	let width = matvec_width::<T>(&par, *lhs.nrows(), *lhs.ncols());
+	let (m, k) = (*lhs.nrows(), *lhs.ncols());
+	let width = matvec_width::<T>(&par, m, k);
 	crate::utils::thread::with_width(par, width, |par| match par {
 		Par::Seq => {
 			matvec_colmajor_seq(dst, accum, lhs, conj_lhs, rhs, conj_rhs, alpha)
 		},
+		mut par if depth_split::<T>(m, k) => {
+			let chunk = k.div_ceil(par.degree());
+			let jobs = k.div_ceil(chunk);
+			let (mut tmp, _) = crate::workspace::temp_mat_zeroed::<T, _, _>(
+				lhs.nrows(),
+				jobs,
+				stack,
+			);
+			let mut tmp = tmp
+				.as_mat_mut()
+				.try_as_col_major_mut()
+				.expect("a temporary matrix is column-major");
+			crate::utils::thread::for_each(
+				par.reborrow(),
+				jobs,
+				tmp.rb_mut()
+					.par_col_chunks_mut(1)
+					.zip_eq(lhs.par_col_chunks(chunk))
+					.zip_eq(rhs.as_mat().par_row_chunks(chunk)),
+				|((mut tmp, lhs), rhs)| {
+					crate::with_dim!(J, lhs.ncols());
+					matvec_colmajor_seq(
+						tmp.rb_mut().col_mut(0),
+						Accum::Replace,
+						lhs.as_col_shape(J),
+						conj_lhs,
+						rhs.col(0).as_row_shape(J),
+						conj_rhs,
+						alpha,
+					)
+				},
+			);
+			// the partials are added by rows, on the whole team; each element still adds
+			// them in order
+			let chunk = m.div_ceil(par.degree());
+			crate::utils::thread::for_each(
+				par,
+				m.div_ceil(chunk),
+				dst.as_dyn_rows_mut()
+					.as_mat_mut()
+					.par_row_chunks_mut(chunk)
+					.zip_eq(tmp.rb().as_dyn_rows().par_row_chunks(chunk)),
+				|(dst, tmp)| {
+					crate::with_dim!(M, tmp.nrows());
+					add_cols_seq(
+						dst.col_mut(0).as_row_shape_mut(M),
+						accum,
+						tmp.as_row_shape(M),
+					)
+				},
+			);
+		},
 		par => {
-			let m = *lhs.nrows();
 			let chunk = m.div_ceil(par.degree());
 			let lhs = lhs.as_dyn_rows();
 			let dst = dst.as_dyn_rows_mut().as_mat_mut();
@@ -329,6 +389,100 @@ pub(crate) fn matvec_colmajor<'M, 'K, T: ComplexField>(
 			)
 		},
 	})
+}
+
+/// The scratch of [`matvec_colmajor`] for `nrows` rows and depth `k` on `par`: the partial sums
+/// of the depth split, one column per participant, when the split can be taken.
+pub(crate) fn matvec_colmajor_scratch<T: ComplexField>(
+	nrows: usize,
+	k: usize,
+	par: ParShape,
+) -> StackReq {
+	let degree = par.degree();
+	if degree < 2 || !depth_split::<T>(nrows, k) {
+		return StackReq::EMPTY;
+	}
+	crate::workspace::temp_mat_scratch::<T>(nrows, degree.min(k))
+}
+
+/// The depth below which a team always splits the rows of a column-major matrix-vector
+/// product.
+const DEPTH_SPLIT_MIN_DEPTH: usize = 1024;
+/// The size of the matrix, in bytes, above which the depth is split.
+const DEPTH_SPLIT_MIN_BYTES: usize = 8 << 20;
+/// The size of a column, in bytes, at or below which the depth is split.
+const DEPTH_SPLIT_MAX_COL_BYTES: usize = 512;
+
+/// Whether a team splits the depth of a column-major `nrows x k` matrix-vector product rather
+/// than its rows: when the depth is at least [`DEPTH_SPLIT_MIN_DEPTH`], and the matrix is
+/// larger than [`DEPTH_SPLIT_MIN_BYTES`] or its columns no longer than
+/// [`DEPTH_SPLIT_MAX_COL_BYTES`].
+///
+/// Measured on an Apple M1 Pro, widths 2 and 4 (#28). The row split gives every participant a
+/// segment of every column. It stays ahead while the matrix is cache resident, by up to 2x at
+/// width 4, but falls behind once the matrix streams from memory (up to 2x slower than one
+/// thread on `f64`, `1024 x 4096`), and when the segments are a few cache lines long. A
+/// shallow depth split pays for its partial sums: 1.2-4x slower than the row split below a
+/// depth of 256. The rule depends on the shape and the scalar only, so [`matvec_colmajor_scratch`]
+/// can tell from the shape whether the partials are needed.
+pub(crate) fn depth_split<T: ComplexField>(nrows: usize, k: usize) -> bool {
+	let size = core::mem::size_of::<T>();
+	k >= DEPTH_SPLIT_MIN_DEPTH
+		&& (nrows.saturating_mul(k).saturating_mul(size)
+			> DEPTH_SPLIT_MIN_BYTES
+			|| nrows.saturating_mul(size) <= DEPTH_SPLIT_MAX_COL_BYTES)
+}
+
+/// `dst ← [dst +] Σ_j src[:, j]`, the columns added in order.
+fn add_cols_seq<'M, T: ComplexField>(
+	dst: ColMut<'_, T, Dim<'M>, ContiguousFwd>,
+	accum: Accum,
+	src: MatRef<'_, T, Dim<'M>, usize, ContiguousFwd, isize>,
+) {
+	struct Impl<'a, 'M, T> {
+		dst: ColMut<'a, T, Dim<'M>, ContiguousFwd>,
+		accum: Accum,
+		src: MatRef<'a, T, Dim<'M>, usize, ContiguousFwd, isize>,
+	}
+	impl<T: ComplexField> WithSimd for Impl<'_, '_, T> {
+		type Output = ();
+
+		#[inline(always)]
+		fn with_simd<S: Simd>(self, simd: S) {
+			let Self {
+				mut dst,
+				accum,
+				src,
+			} = self;
+			let simd = SimdCtx::<T, S>::new(simd, src.nrows());
+			let (body, tail) = simd.indices();
+			let ncols = src.ncols();
+			macro_rules! sum {
+				($i:expr) => {{
+					let i = $i;
+					let mut j = 0;
+					let mut acc = if accum == Accum::Replace {
+						j = 1;
+						simd.read(src.col(0), i)
+					} else {
+						simd.read(dst.rb(), i)
+					};
+					while j < ncols {
+						acc = simd.add(acc, simd.read(src.col(j), i));
+						j += 1;
+					}
+					simd.write(dst.rb_mut(), i, acc);
+				}};
+			}
+			for i in body {
+				sum!(i);
+			}
+			if let Some(i) = tail {
+				sum!(i);
+			}
+		}
+	}
+	dispatch::<T, _>(Impl { dst, accum, src })
 }
 
 fn matvec_colmajor_seq<'M, 'K, T: ComplexField>(
@@ -591,9 +745,11 @@ pub(crate) fn gemm_generic<T: ComplexField>(
 }
 
 /// Runs a product on the width of `par` that its serial time (`ns_per_mac` per multiply-add)
-/// pays for: on one thread, `seq(dst, lhs, rhs)`; on a team, `seq` on each participant's part,
-/// the columns of `dst` and `rhs` (the rows of `dst` and `lhs` when `dst` has fewer columns than
-/// participants). The depth is never split, so every element is computed as on one thread.
+/// pays for: on one thread, `seq(dst, lhs, rhs)`; on a team, `seq` on each tile of a grid over
+/// `dst` ([`tile_grid`]: the grid that packs the least operand per participant, with edges on
+/// [`ROW_GRAIN`]/[`COL_GRAIN`], as colmat-rs's `gemm_tiled`). The columns of the grid are dealt
+/// to sub-teams, each of which deals its rows. The depth is never split, so every element is
+/// computed as on one thread.
 pub(crate) fn split_product<T: ComplexField>(
 	dst: MatMut<'_, T, usize, usize>,
 	lhs: MatRef<'_, T, usize, usize>,
@@ -607,6 +763,8 @@ pub(crate) fn split_product<T: ComplexField>(
 		MatRef<'_, T, usize, usize>,
 	),
 ) {
+	use crate::utils::partition::{COL_GRAIN, ROW_GRAIN, tile_grid};
+	use crate::utils::thread::{for_each, for_each_with_par};
 	let (m, n) = dst.shape();
 	let k = lhs.ncols();
 	let macs = m.saturating_mul(n).saturating_mul(k);
@@ -615,30 +773,44 @@ pub(crate) fn split_product<T: ComplexField>(
 		crate::utils::cost::serial_time(macs, ns_per_mac),
 		1,
 	);
-	crate::utils::thread::with_width(par, width, |par| match par {
-		Par::Seq => seq(dst, lhs, rhs),
-		par => {
-			let degree = par.degree();
-			if n >= degree {
-				let chunk = n.div_ceil(degree);
-				crate::utils::thread::for_each(
-					par,
-					n.div_ceil(chunk),
-					dst.par_col_chunks_mut(chunk)
-						.zip_eq(rhs.par_col_chunks(chunk)),
-					|(dst, rhs)| seq(dst, lhs, rhs),
-				)
-			} else {
-				let chunk = m.div_ceil(degree);
-				crate::utils::thread::for_each(
-					par,
-					m.div_ceil(chunk),
-					dst.par_row_chunks_mut(chunk)
-						.zip_eq(lhs.par_row_chunks(chunk)),
-					|(dst, lhs)| seq(dst, lhs, rhs),
-				)
-			}
-		},
+	crate::utils::thread::with_width(par, width, |par| {
+		let (pm, pn) = tile_grid(m, n, par.degree());
+		if matches!(par, Par::Seq) || pm * pn <= 1 {
+			return seq(dst, lhs, rhs);
+		}
+		let rh = m.div_ceil(pm).next_multiple_of(ROW_GRAIN).min(m);
+		let cw = n.div_ceil(pn).next_multiple_of(COL_GRAIN).min(n);
+		let (nrow, ncol) = (m.div_ceil(rh), n.div_ceil(cw));
+		if ncol == 1 {
+			for_each(
+				par,
+				nrow,
+				dst.par_row_chunks_mut(rh).zip_eq(lhs.par_row_chunks(rh)),
+				|(dst, lhs)| seq(dst, lhs, rhs),
+			)
+		} else if nrow == 1 {
+			for_each(
+				par,
+				ncol,
+				dst.par_col_chunks_mut(cw).zip_eq(rhs.par_col_chunks(cw)),
+				|(dst, rhs)| seq(dst, lhs, rhs),
+			)
+		} else {
+			for_each_with_par(
+				par,
+				ncol,
+				dst.par_col_chunks_mut(cw).zip_eq(rhs.par_col_chunks(cw)),
+				|(dst, rhs), par| {
+					for_each(
+						par,
+						nrow,
+						dst.par_row_chunks_mut(rh)
+							.zip_eq(lhs.par_row_chunks(rh)),
+						|(dst, lhs)| seq(dst, lhs, rhs),
+					)
+				},
+			)
+		}
 	})
 }
 

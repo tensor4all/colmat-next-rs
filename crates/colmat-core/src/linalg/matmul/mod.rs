@@ -49,14 +49,32 @@ fn precondition<M: Shape, N: Shape, K: Shape>(
 /// The scratch [`matmul_with_scratch`] needs for an `m x n` product of depth `k` on `par`.
 ///
 /// It depends on the shape and the parallelism only, not on the strides or the conjugation.
+/// Besides the kernel provider's own, it holds the partial sums of a column-major
+/// matrix-vector product whose depth a team splits (`nrows x width` elements, #28): see
+/// [`matmul_with_scratch`], "Rounding on a team".
 pub fn matmul_scratch<T: KernelField>(
 	m: usize,
 	n: usize,
 	k: usize,
 	par: ParShape,
 ) -> StackReq {
-	if m == 0 || n == 0 || k <= 1 || m == 1 || n == 1 {
+	if m == 0 || n == 0 || k <= 1 {
 		return StackReq::EMPTY;
+	}
+	if m == 1 || n == 1 {
+		// a column-major matrix-vector product on a team; the general product these shapes
+		// fall back to needs no scratch
+		let col = if n == 1 {
+			generic::matvec_colmajor_scratch::<T>(m, k, par)
+		} else {
+			StackReq::EMPTY
+		};
+		let row = if m == 1 {
+			generic::matvec_colmajor_scratch::<T>(n, k, par)
+		} else {
+			StackReq::EMPTY
+		};
+		return col.or(row);
 	}
 	<T::Kernels as Gemm<T>>::gemm_scratch(m, n, k, par)
 }
@@ -92,6 +110,15 @@ pub fn matmul_scratch<T: KernelField>(
 /// allocates nothing on aarch64. The entries that remove this exception are
 /// tensor4all/t4a-gemm#21 and tensor4all/t4a-private-gemm-x86#14; [`matmul_scratch`] stays empty
 /// for these products until then.
+///
+/// # Rounding on a team
+///
+/// On a team the output is split and every element is computed as on one thread, so the result
+/// is bitwise that of `Par::Seq`, except for a column-major matrix-vector product (`n == 1`
+/// with a column-major `lhs`, or `m == 1` with a row-major `rhs`) of depth at least 1024 whose
+/// matrix is larger than 8 MiB or whose columns are at most 512 bytes. Its depth is split, as
+/// colmat-rs did, and the partial sums are added in order: the result rounds differently from
+/// `Par::Seq`, within the same error bound, and is the same on every call of the same width.
 ///
 /// # Panics
 ///
@@ -299,6 +326,7 @@ fn matmul_imp<T: KernelField>(
 			conj_rhs,
 			alpha,
 			par,
+			stack,
 		) {
 			None => return,
 			Some(p) => par = p,
@@ -315,6 +343,7 @@ fn matmul_imp<T: KernelField>(
 			conj_lhs,
 			alpha,
 			par,
+			stack,
 		) {
 			None => return,
 			Some(p) => par = p,
@@ -377,6 +406,7 @@ fn matvec<'p, T: ComplexField>(
 	conj_rhs: Conj,
 	alpha: &T,
 	par: Par<'p>,
+	stack: &mut MemStack,
 ) -> Option<Par<'p>> {
 	crate::with_dim!(M, dst.nrows());
 	crate::with_dim!(K, lhs.ncols());
@@ -397,6 +427,7 @@ fn matvec<'p, T: ComplexField>(
 			conj_rhs,
 			alpha,
 			par,
+			stack,
 		);
 		return None;
 	}
