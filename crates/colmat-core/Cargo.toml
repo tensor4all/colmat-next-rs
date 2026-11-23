@@ -1,7 +1,7 @@
 [package]
 name = "colmat-core"
 version = "0.0.0"
-description = "Matrix views, iteration, layout copies and the execution layer (Par, team skeletons, cost model, workspace) for colmat-next (trial)."
+description = "Matrix views, iteration, layout copies, the execution layer (Par, team skeletons, cost model, workspace) and the matrix product with its kernel hook for colmat-next (trial)."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -16,14 +16,31 @@ dyn-stack.workspace = true
 equator.workspace = true
 generativity.workspace = true
 reborrow.workspace = true
+nano-gemm.workspace = true
+gemm.workspace = true
+t4a-gemm-common.workspace = true
 threadteam = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+t4a-private-gemm-x86 = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
 
 [features]
-default = ["std", "threadteam"]
-std = ["colmat-traits/std", "num-complex/std", "dyn-stack/std"]
+default = ["std", "threadteam", "apple-sme"]
+std = [
+	"colmat-traits/std",
+	"num-complex/std",
+	"dyn-stack/std",
+	"nano-gemm/std",
+	"gemm/std",
+	"dep:t4a-private-gemm-x86",
+	"t4a-private-gemm-x86?/std",
+]
+# The SME kernels of `t4a-gemm` on Apple M4 and later, behind runtime detection (#23, answer
+# (3)). The `experimental-apple-amx` kernels are not enabled.
+apple-sme = ["std", "gemm/apple-sme"]
 # The parallel route: `Par::Team` runs its regions on a threadteam team (#20).
 threadteam = ["std", "dep:threadteam"]
 

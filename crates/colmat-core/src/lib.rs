@@ -19,8 +19,11 @@
 //! - the static partitions of a region ([`utils::partition`]);
 //! - the caller-owned workspace ([`workspace`]).
 //!
-//! The matrix product and its kernels come in the next step of the design
-//! record (§7).
+//! It also holds the matrix product (#23, design record §5 "Kernel hooks"):
+//! [`linalg::matmul`], the driver, which hands the packed products to the
+//! scalar's kernel provider through the [`kernels::Gemm`] hook, with the
+//! generic kernels for every scalar and the native ones for `f32`, `f64`,
+//! `c32` and `c64`.
 //!
 //! # The view invariant
 //!
@@ -491,8 +494,10 @@ pub mod col;
 pub mod diag;
 /// element-wise equality
 mod eq;
+pub mod kernels;
 /// copies between matrices of different layouts
 pub mod layout;
+pub mod linalg;
 /// rectangular matrix
 pub mod mat;
 mod par;
@@ -809,6 +814,15 @@ pub enum Conj {
 	No,
 	/// implicit conjugation
 	Yes,
+}
+
+/// determines whether to replace or add to the result of a matmul operation
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Accum {
+	/// overwrites the output buffer
+	Replace,
+	/// adds the result to the output buffer
+	Add,
 }
 
 /// determines which side of a self-adjoint matrix should be accessed
