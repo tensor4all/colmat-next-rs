@@ -9,6 +9,7 @@
 
 use crate::conjugate::Conjugate;
 use crate::cost::CostWeight;
+use crate::kernels::NativeKernels;
 use crate::math_utils::*;
 use crate::ops::{NegByRef, RefOps, imply::Imply};
 use crate::precision::Precision;
@@ -40,6 +41,11 @@ pub trait ComplexField:
 	/// The SIMD provider for this type (S1). [`crate::NoSimd`] is always
 	/// valid.
 	type Simd: SimdField<Self>;
+	/// The kernel provider of this type (S2): the type the kernel hooks of `colmat-core`
+	/// (`Gemm<T>`, ...) are implemented for. [`crate::GenericKernels`] is always valid; a type
+	/// with kernels of its own names its own provider. A provider for a real type should also
+	/// serve `Complex<Self>`, whose provider is the same type.
+	type Kernels: Copy + Default + Send + Sync + Debug + 'static;
 	/// The cost weight of this type against `f64` (S3, optional). The
 	/// default prices the type as `f64`; see [`CostWeight`].
 	const COST: CostWeight = CostWeight::F64;
@@ -117,6 +123,7 @@ macro_rules! impl_native_real {
 			const IS_REAL: bool = true;
 			type Real = Self;
 			type Simd = NativeSimd;
+			type Kernels = NativeKernels;
 			const COST: CostWeight = $cost;
 
 			#[inline(always)]
@@ -237,6 +244,7 @@ impl<T: RealField> ComplexField for Complex<T> {
 	const IS_REAL: bool = false;
 	type Real = T;
 	type Simd = ComplexSimd<T::Simd>;
+	type Kernels = T::Kernels;
 	// against the complex rates (`c64`), the weight of the component type
 	const COST: CostWeight = T::COST;
 

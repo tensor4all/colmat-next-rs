@@ -23,6 +23,15 @@ dyn-stack = { version = "0.13.2", default-features = false, features = ["core-er
 equator = "0.6.0"
 generativity = "1.1.0"
 reborrow = "0.5.5"
+# Native kernels of the matrix product (#23): small products (MIT).
+nano-gemm = { version = "0.2.2", default-features = false }
+# Native kernels of the matrix product (#23): packed products (MIT; the tensor4all fork of `gemm`,
+# library name `gemm`, as in colmat-rs). `t4a-gemm-common` is named only to require 0.20.4, the
+# release without a per-call allocation of the packing flags (colmat-rs `faer/Cargo.toml`).
+gemm = { package = "t4a-gemm", version = "0.20.1", default-features = false }
+t4a-gemm-common = { version = "0.20.4", default-features = false }
+# x86-64 packed products (MIT; the tensor4all fork of `private-gemm-x86`).
+t4a-private-gemm-x86 = { version = "0.1.28", default-features = false }
 # The only crate that starts threads (`deny.toml`); its default `parallel` feature brings rayon.
 threadteam = "0.6.0"
 

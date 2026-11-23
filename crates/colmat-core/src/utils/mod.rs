@@ -5,6 +5,7 @@
 pub mod bound;
 pub mod cost;
 pub mod partition;
+pub mod simd;
 #[cfg(feature = "threadteam")]
 pub mod team;
 pub mod thread;

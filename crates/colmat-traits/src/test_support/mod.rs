@@ -104,6 +104,7 @@ impl ComplexField for Sf {
 	const IS_REAL: bool = true;
 	type Real = Sf;
 	type Simd = NoSimd;
+	type Kernels = crate::GenericKernels;
 
 	fn zero_impl() -> Self {
 		Sf(0.0)

@@ -8,13 +8,14 @@
 //! first use and on repeated calls of growing shape.
 
 use colmat_core::layout::copy_across_layouts;
+use colmat_core::linalg::matmul::{matmul_scratch, matmul_with_scratch};
 use colmat_core::perm::{
 	Perm, permute_cols_in_place, permute_rows_in_place,
 	permute_rows_in_place_scratch,
 };
 use colmat_core::utils::thread::for_each;
 use colmat_core::workspace::{MemBuffer, MemStack, StackReq, temp_mat_scratch};
-use colmat_core::{Mat, Par};
+use colmat_core::{Accum, Conj, Mat, Par, c64};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -135,6 +136,147 @@ fn check(mut par: Par<'_>) {
 		assert_eq!(k, 0, "permutations {m}x{n}");
 		assert!(a[(0, 0)] == 2.0 * src[(m - 1, n - 1)]);
 	}
+	check_matmul::<f64>(par.reborrow(), |i| i as f64);
+	check_matmul::<f32>(par.reborrow(), |i| i as f32);
+	check_matmul::<c64>(par, |i| c64::new(i as f64, 1.0 - i as f64));
+}
+
+/// The paths of the matrix product (#23) that allocate nothing from the first call: the
+/// driver's matrix-vector (both layouts) and rank-one kernels, and `nano-gemm` for small
+/// products. The operands are laid out so that each shape takes the path it names.
+fn check_matmul<T: colmat_core::kernels::KernelField + Copy>(
+	mut par: Par<'_>,
+	v: impl Fn(usize) -> T,
+) {
+	let degree = par.degree();
+	// (m, n, k, lhs row-major): `nano-gemm`; column-major matrix-vector; row-major
+	// matrix-vector (a row `dst` times a column-major `rhs`); rank one
+	let shapes = [
+		(17usize, 9usize, 13usize, false),
+		(300, 1, 200, false),
+		(300, 1, 200, true),
+		(1, 300, 200, false),
+		(300, 200, 1, false),
+	];
+	for (m, n, k, lhs_row_major) in shapes {
+		let a = Mat::from_fn(m, k, |i, j| v(i + 3 * j));
+		let at = Mat::from_fn(k, m, |j, i| v(i + 3 * j));
+		let b = Mat::from_fn(k, n, |i, j| v(2 * i + j));
+		// a `1 x n` destination is the transpose of an `n x 1` column, so it is contiguous
+		let mut c = Mat::from_fn(m, n, |i, j| v(i + j));
+		let mut ct = Mat::from_fn(n, m, |j, i| v(i + j));
+		let mut buf = MemBuffer::new(matmul_scratch::<T>(m, n, k, par.shape()));
+		for accum in [Accum::Replace, Accum::Add] {
+			let lhs = if lhs_row_major {
+				at.as_ref().transpose()
+			} else {
+				a.as_ref()
+			};
+			let lhs = if m == 1 { at.as_ref().transpose() } else { lhs };
+			let dst = if m == 1 {
+				ct.as_mut().transpose_mut()
+			} else {
+				c.as_mut()
+			};
+			let n_alloc = allocations(|| {
+				matmul_with_scratch(
+					dst,
+					accum,
+					lhs,
+					Conj::No,
+					b.as_ref(),
+					Conj::Yes,
+					v(2),
+					par.reborrow(),
+					MemStack::new(&mut buf),
+				)
+			});
+			assert_eq!(
+				n_alloc,
+				0,
+				"matmul {} {m}x{n}x{k} {accum:?} on {degree}",
+				core::any::type_name::<T>()
+			);
+		}
+	}
+}
+
+/// The packed native products, `t4a-gemm` (and `t4a-private-gemm-x86` on x86-64). They keep
+/// their packing memory in thread-locals, so the first call on a thread allocates and a product
+/// whose pack exceeds L2 allocates on every call (tensor4all/t4a-gemm#21,
+/// tensor4all/t4a-private-gemm-x86#14). `first_call` asks for nothing to be allocated even then;
+/// otherwise each shape is warmed up once on every participant before it is counted.
+fn check_native_matmul(mut par: Par<'_>, first_call: bool) {
+	let degree = par.degree();
+	// below L2 for the pack on every host this runs on (a 130 x 90 lhs block is 94 KB)
+	let shapes = [(130usize, 70usize, 90usize), (64, 200, 64)];
+	for (m, n, k) in shapes {
+		let a = Mat::from_fn(m, k, |i, j| (i + 3 * j) as f64);
+		let b = Mat::from_fn(k, n, |i, j| (2 * i + j) as f64);
+		let mut c = Mat::<f64>::zeros(m, n);
+		let mut buf =
+			MemBuffer::new(matmul_scratch::<f64>(m, n, k, par.shape()));
+		let mut run = |par: Par<'_>| {
+			matmul_with_scratch(
+				c.as_mut(),
+				Accum::Replace,
+				a.as_ref(),
+				Conj::No,
+				b.as_ref(),
+				Conj::No,
+				2.0,
+				par,
+				MemStack::new(&mut buf),
+			)
+		};
+		if !first_call {
+			run(par.reborrow());
+		}
+		let n_alloc = allocations(|| run(par.reborrow()));
+		assert_eq!(
+			n_alloc, 0,
+			"native matmul f64 {m}x{n}x{k} on {degree}, first call: {first_call}"
+		);
+	}
+}
+
+/// Runs `f` on `Par::Seq` and on marked teams of 2 and 4, each on fresh threads (a new thread
+/// for `Seq`, a new pool for a team), so that nothing a previous check warmed up is reused.
+fn on_fresh_threads(f: fn(Par<'_>)) {
+	let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+	std::thread::spawn(move || {
+		PARTICIPANT.with(|p| p.set(true));
+		f(Par::Seq)
+	})
+	.join()
+	.unwrap();
+	#[cfg(feature = "threadteam")]
+	for width in [2usize, 4] {
+		std::thread::spawn(move || {
+			PARTICIPANT.with(|p| p.set(true));
+			with_marked_team(width, f)
+		})
+		.join()
+		.unwrap();
+	}
+}
+
+/// The tests of this file count on shared counters: one at a time.
+static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+#[cfg_attr(
+	target_arch = "x86_64",
+	ignore = "t4a-private-gemm-x86 grows its packing memory per thread: tensor4all/t4a-private-gemm-x86#14"
+)]
+fn native_matmul_allocates_nothing_after_a_warm_up() {
+	on_fresh_threads(|par| check_native_matmul(par, false));
+}
+
+#[test]
+#[ignore = "the packed native kernels allocate on a thread's first call: tensor4all/t4a-gemm#21, tensor4all/t4a-private-gemm-x86#14"]
+fn native_matmul_allocates_nothing_from_the_first_call() {
+	on_fresh_threads(|par| check_native_matmul(par, true));
 }
 
 /// Runs `f` on a team of `width` participants whose members are marked as participating.
@@ -161,6 +303,7 @@ fn with_marked_team(width: usize, f: impl FnOnce(Par<'_>)) {
 
 #[test]
 fn supplied_destination_team_and_scratch_allocate_nothing() {
+	let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
 	PARTICIPANT.with(|p| p.set(true));
 	// the counter sees an allocation on this thread
 	assert_eq!(allocations(|| drop(std::hint::black_box(vec![1u8; 10]))), 1);

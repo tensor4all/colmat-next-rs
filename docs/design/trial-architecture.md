@@ -101,7 +101,13 @@ until recorded in meta.
   selection mechanism (associated provider on the scalar, or an explicit provider argument) is open
   in meta §11. The trial prototypes the associated provider with a default, because #2's body
   chose static binding and operators need a default, and keeps the explicit form possible for
-  adapter crates.
+  adapter crates. Implemented for P1 (#23). The scalar names its provider in
+  `ComplexField::Kernels` (`colmat-traits`). The hook `Gemm<T>` lives in `colmat-core`, next to
+  the views its contract is written in, and drivers ask for `KernelField`. Stable Rust has no
+  associated-type defaults, so the "default" is a line each scalar writes: `GenericKernels` (every
+  hook for every scalar) or `NativeKernels` (`f32`, `f64`, `c32`, `c64`). The matrix product's
+  driver keeps the empty, vector and rank-one cases on the generic kernels and hands the rest to
+  the provider. The triangular-output variant is not in #23.
 - **Cost.** A hook's provider declares its rate per kernel family. The cost model reads the row of
   the selected (host class, scalar, kernel), with a ratio to `f64` as fallback. Block sizes and
   recursion crossovers are derived from the same row, not from literals in drivers. The fallback
@@ -117,7 +123,13 @@ until recorded in meta.
   path, no heap or thread-local allocation during execution, capacity errors before outputs change.
   Solvers take scratch, so iterative refinement does not allocate per step. Until meta §11
   question 3 settles the error type, an insufficient stack panics at entry, before any output is
-  written (#20).
+  written (#20). **One exception is open (#23):** the packed native products (`t4a-gemm`, and
+  `t4a-private-gemm-x86` on x86-64) keep their packing memory in thread-locals. So
+  `matmul_with_scratch` allocates on a thread's first call, and above L2 on every call, for
+  `f32`, `f64`, `c32` and `c64`. That holds until those crates take scratch
+  (tensor4all/t4a-gemm#21, tensor4all/t4a-private-gemm-x86#14). Its rustdoc and the
+  no-allocation test state this: the test checks the native path after one warm-up, and its
+  first-call case is ignored with those links.
 - **Execution.** `Par::Team` wraps a threadteam token, behind `colmat-core`'s `threadteam` feature
   (meta §7a's layout puts `threadteam` under `colmat-core`). The team skeletons deal a
   `colmat-core` trait (`utils::thread::Producer`) rather than rayon's producer (debt K7), so the

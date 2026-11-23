@@ -27,6 +27,25 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `colmat-core` and `colmat-traits` (#23): the matrix product and its kernel hook (P1).
+  - `colmat-traits`: `ComplexField::Kernels` names a scalar's kernel provider (S2):
+    `GenericKernels` or `NativeKernels`.
+  - `colmat-core`:
+    - `kernels::Gemm<T>` is the hook and `KernelField` the bound the drivers ask for;
+    - `linalg::matmul` has `matmul_with_scratch`, `matmul_scratch`, `matmul_with_conj` and
+      `matmul` (the last two allocate the scratch per call, as their rustdoc says), with the
+      driver ported from colmat-rs `71337cdc`;
+    - `utils::simd` is ported onto `SimdLayout`/`SimdField`, and `Accum` comes with it.
+  - The generic kernels (matrix-vector, rank-one, the vertical and horizontal micro-kernels)
+    run for every scalar and split the output, never the depth, on a team.
+  - The native kernels of `f32`, `f64`, `c32` and `c64`: `nano-gemm` up to `16^3`
+    multiply-adds, then `t4a-gemm`, or `t4a-private-gemm-x86` on x86-64 with AVX2/FMA or
+    AVX-512F. `apple-sme` is a default feature with runtime detection; AMX is not enabled.
+  - Known gap: the packed native products allocate on a thread's first call (`t4a-gemm` also
+    above L2), until tensor4all/t4a-gemm#21 and tensor4all/t4a-private-gemm-x86#14.
+    `matmul_with_scratch`'s rustdoc and the no-allocation test say so.
+  - Work log: `docs/worklogs/2026-11-23-colmat-core-matmul.md`.
+
 - `colmat-core` (#20): the execution layer, ported from colmat-rs `71337cdc` and restructured. `Par`
   and `ParShape`; the team skeletons (`utils::thread`: `join_raw`, `join_sized`, `split`,
   `with_width`, `for_each`, `for_each_with_par`) and the route onto a threadteam team

@@ -16,7 +16,10 @@
 //! - **S3, optional.** [`ComplexField::COST`] states the type's
 //!   [`CostWeight`] against `f64`, which the cost model of `colmat-core`
 //!   multiplies its measured rates by. The default prices the type as `f64`.
-//!   (S2, the kernel hooks, live with the kernels.)
+//! - **S2, optional.** [`ComplexField::Kernels`] names the type's kernel
+//!   provider ([`GenericKernels`] if it has none of its own; [`NativeKernels`]
+//!   for `f32`, `f64` and their complex types). The kernel hooks themselves
+//!   live in `colmat-core`, implemented for the provider and the scalar.
 //!
 //! Dispatch is by capability, never by type identity: nothing here branches on
 //! `TypeId`, `size_of` or "is this `f64`" constants.
@@ -38,6 +41,7 @@
 mod conjugate;
 mod cost;
 mod index;
+mod kernels;
 pub mod math_utils;
 mod ops;
 mod precision;
@@ -49,6 +53,7 @@ mod test_support;
 pub use conjugate::{ComplexConj, Conjugate, Real};
 pub use cost::CostWeight;
 pub use index::{Index, IndexCore, Seal, SignedIndex};
+pub use kernels::{GenericKernels, NativeKernels};
 pub use num_complex::Complex;
 pub use ops::{
 	AddByRef, ByRef, DivByRef, MulByRef, NegByRef, RefOps, SubByRef, imply,
