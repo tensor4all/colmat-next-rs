@@ -438,8 +438,11 @@ macro_rules! impl_native {
 		// stores enable exactly the words of the enabled pairs
 		// (`split_pair_range`) and access them with pulp's masked operations.
 		// On NEON (`neon_pairs`), full pair loads and stores are one
-		// `vld2q`/`vst2q` on the `2 lanes` values of the slice, which is
-		// pulp's own deinterleave without the stack copy (#26).
+		// `vld2q`/`vst2q`, which reads or writes exactly the `2 lanes` values
+		// of the one-register slice `load2`/`store2` are given, and puts the
+		// lanes in the order of pulp's own deinterleave (the same `vld2q`),
+		// so `iota2` still names each lane's pair (#26). The masked pair
+		// loads and stores (`mask_load2`/`mask_store2`) keep the pulp path.
 		unsafe impl SimdPairs<$ty> for NativeSimd {
 			type MemMask2<S: Simd> = (MemMask<S::[<$m>]>, MemMask<S::[<$m>]>);
 
