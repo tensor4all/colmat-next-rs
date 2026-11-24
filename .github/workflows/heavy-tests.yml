@@ -4,10 +4,17 @@ name: Heavy tests
 # "CI time budget"): tests named `heavy_*` and marked `#[ignore = "heavy: ..."]`,
 # and every example and bench target. This workflow carries its own bound below.
 
+# Two schedules (#31). Each job below names the one it runs on, through `github.event.schedule`:
+# - nightly: `heavy` and `kani`;
+# - weekly (Sunday): `miri` and `miri-tree-borrows`, the two longest jobs (12 and 35 runner
+#   minutes on 2026-11-23, run 45236189147, against a 60-minute timeout).
+# `workflow_dispatch` runs every job, so Miri can be run on a branch before it merges:
+# `gh workflow run heavy-tests.yml --ref <branch>`.
 on:
   schedule:
-    # 18:00 UTC = 03:00 JST.
+    # 18:00 UTC = 03:00 JST. Keep these strings in step with the `if:` of each job.
     - cron: "0 18 * * *"
+    - cron: "0 18 * * 0"
   workflow_dispatch:
 
 concurrency:
@@ -20,6 +27,7 @@ permissions:
 jobs:
   heavy:
     name: Heavy tests
+    if: ${{ github.event_name != 'schedule' || github.event.schedule == '0 18 * * *' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -35,7 +43,7 @@ jobs:
       - name: Run heavy tests
         if: ${{ hashFiles('Cargo.toml') != '' }}
         run: cargo test --workspace --profile ci -- --ignored heavy_
-      # The property tests (`prop_*`) run 256 cases in the PR pipeline; nightly runs many more.
+      # The property tests (`prop_*`) run 256 cases in the PR pipeline; this job runs many more.
       - name: Property tests, many cases
         if: ${{ hashFiles('Cargo.toml') != '' }}
         env:
@@ -44,11 +52,13 @@ jobs:
 
   # Undefined behaviour in the unsafe code: the data movement of `colmat-traits` (masked and pair
   # loads and stores, slice reinterpretation) and the views of `colmat-core` (raw-pointer views,
-  # splits, owned-matrix allocation, `zip!`). Nightly-only, and slower than the PR budget allows.
+  # splits, owned-matrix allocation, `zip!`). Weekly (#31) and on dispatch, and slower than the PR
+  # budget allows.
   # Two jobs, one per aliasing model Miri implements (#16): Stacked Borrows (the default) and Tree
   # Borrows. A pattern can be UB under one and not the other; each job fits its own timeout.
   miri:
     name: Miri, Stacked Borrows (colmat-traits, colmat-core)
+    if: ${{ github.event_name != 'schedule' || github.event.schedule == '0 18 * * 0' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -76,6 +86,7 @@ jobs:
 
   miri-tree-borrows:
     name: Miri, Tree Borrows (colmat-traits, colmat-core)
+    if: ${{ github.event_name != 'schedule' || github.event.schedule == '0 18 * * 0' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -104,6 +115,7 @@ jobs:
   # under proof has no architecture-specific code, so no `--ignore-global-asm` is needed.
   kani:
     name: Kani proofs (colmat-core)
+    if: ${{ github.event_name != 'schedule' || github.event.schedule == '0 18 * * *' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
@@ -121,10 +133,13 @@ jobs:
         run: cargo kani -p colmat-core
 
   # A separate job, because a run that dies on the timeout never reaches a later step.
+  # It runs after every scheduled run, nightly or weekly. A job the schedule left out has the
+  # result `skipped`, which the condition below does not match, so only a job that ran and
+  # failed (or was cancelled) files a report.
   # One rolling issue, found by its title: later failing runs comment on it instead of filing a
   # new one. No label is used, because the repository has none yet (PR #3, point 5).
   report:
-    name: Report a failing night
+    name: Report a failing scheduled run
     needs: [heavy, miri, miri-tree-borrows, kani]
     if: >-
       ${{ always() && (needs.heavy.result == 'failure' || needs.heavy.result == 'cancelled'

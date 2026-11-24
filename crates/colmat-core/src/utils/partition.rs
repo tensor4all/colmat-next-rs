@@ -235,7 +235,7 @@ mod tests {
 	///
 	/// Every `parts` up to the cap is checked, so the calls grow as `cap^2 / 2`:
 	/// 4096 x 4096 with `align = 1` alone (cap 2048) makes about 2.1M calls.
-	/// Under Miri that did not finish within the nightly's 60 minutes (#21), so
+	/// Under Miri that did not finish within the Miri job's 60 minutes (#21), so
 	/// Miri skips 2048 and above, and 1024 with `align = 1`: about 28k calls,
 	/// which keep the small sizes, both aligns and 1024 at `align = 8`.
 	#[test]

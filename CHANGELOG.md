@@ -9,6 +9,9 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- CI (#31): the two Miri jobs of `heavy-tests.yml` run weekly (Sunday 18:00 UTC) instead of
+  nightly; `heavy` and `kani` stay nightly, and `workflow_dispatch` still runs every job. The
+  failure report runs after both schedules. `CONTRIBUTING.md` states what this costs.
 - `colmat-core` (#28): a product on a team cuts its output into the grid of
   `utils::partition::tile_grid`, as colmat-rs's `gemm_tiled` did, instead of columns or rows only;
   a tall product no longer packs the whole `lhs` on every participant (`f64` `4096 x 64 x 64` on
