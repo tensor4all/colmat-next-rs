@@ -5,7 +5,8 @@
 //! go through element pointers and slices instead of register pointers, and
 //! pair loads (for `Complex<f32/f64>`) replace the `Unit::IS_NATIVE_*`
 //! branches of the default load hooks (lines 1515-1623). faer's MIT notice:
-//! `LICENSE-faer`.
+//! `LICENSE-faer`. On NEON, full pair loads and stores reach memory with
+//! `vld2q`/`vst2q` directly (#26), written for this trial.
 
 use super::{SimdField, SimdLayout, SimdPairs};
 use pulp::{MemMask, Simd};
@@ -71,11 +72,22 @@ fn split_pair_range(
 	(norm(a), norm(b))
 }
 
+/// Whether a register of `V` is one NEON register of `T`, so that `vld2q`/`vst2q` load and
+/// store a register of pairs in one step (#26). A capability of the register, read from its
+/// size, not the identity of the instruction set: on aarch64 every pulp instruction set with
+/// 16-byte registers is NEON, and pulp's own NEON deinterleave is the same `vld2q`, so
+/// `load2`, `store2` and `iota2` agree on the lane order with the fallback path.
+#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+const fn neon_pairs<V, T>() -> bool {
+	core::mem::size_of::<V>() == 16 && core::mem::size_of::<T>() > 0
+}
+
 macro_rules! impl_native {
 	(
 		$ty:ident, $index:ident, $lanes:ident,
 		$v:ident, $m:ident, $u:ident,
-		$iota:ident, $iota2:ident
+		$iota:ident, $iota2:ident,
+		$vld2:ident, $vst2:ident, $vld2u:ident
 	) => {
 		paste::paste! {
 		// SAFETY: one register is one pulp vector of `$lanes` values of `$ty`,
@@ -425,6 +437,12 @@ macro_rules! impl_native {
 		// order the instruction set's shuffle produces. Masked pair loads and
 		// stores enable exactly the words of the enabled pairs
 		// (`split_pair_range`) and access them with pulp's masked operations.
+		// On NEON (`neon_pairs`), full pair loads and stores are one
+		// `vld2q`/`vst2q`, which reads or writes exactly the `2 lanes` values
+		// of the one-register slice `load2`/`store2` are given, and puts the
+		// lanes in the order of pulp's own deinterleave (the same `vld2q`),
+		// so `iota2` still names each lane's pair (#26). The masked pair
+		// loads and stores (`mask_load2`/`mask_store2`) keep the pulp path.
 		unsafe impl SimdPairs<$ty> for NativeSimd {
 			type MemMask2<S: Simd> = (MemMask<S::[<$m>]>, MemMask<S::[<$m>]>);
 
@@ -490,6 +508,23 @@ macro_rules! impl_native {
 				src: &[[$ty; 2]],
 			) -> (S::[<$v>], S::[<$v>]) {
 				assert_eq!(src.len(), S::$lanes, "one register of pairs");
+				#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+				if const { neon_pairs::<S::[<$v>], $ty>() } {
+					// SAFETY: `src` holds `2 lanes` values of `$ty`, the 32 bytes
+					// `vld2q` reads (`neon_pairs`); NEON is enabled at compile
+					// time. A register is 16 bytes of `Pod`, so every bit pattern
+					// is a value of it.
+					let pair = unsafe {
+						core::arch::aarch64::$vld2(src.as_ptr() as *const $ty)
+					};
+					// SAFETY: as above; the two halves have the size of a register.
+					return unsafe {
+						(
+							core::mem::transmute_copy(&pair.0),
+							core::mem::transmute_copy(&pair.1),
+						)
+					};
+				}
 				let words: [S::[<$v>]; 2] = bytemuck::pod_read_unaligned(
 					bytemuck::cast_slice(src),
 				);
@@ -505,6 +540,20 @@ macro_rules! impl_native {
 				second: S::[<$v>],
 			) {
 				assert_eq!(dst.len(), S::$lanes, "one register of pairs");
+				#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+				if const { neon_pairs::<S::[<$v>], $ty>() } {
+					// SAFETY: a register is 16 bytes (`neon_pairs`), the size of
+					// each half of the NEON pair; `dst` holds the `2 lanes`
+					// values of `$ty` that `vst2q` writes, and NEON is enabled
+					// at compile time.
+					unsafe {
+						core::arch::aarch64::$vst2(
+							dst.as_mut_ptr() as *mut $ty,
+							core::mem::transmute_copy(&[first, second]),
+						);
+					}
+					return;
+				}
 				let words: [S::[<$v>]; 2] =
 					ctx.[<interleave_shfl_ $v>]([first, second]);
 				bytemuck::cast_slice_mut(dst)
@@ -514,11 +563,21 @@ macro_rules! impl_native {
 			#[inline(always)]
 			fn iota2<S: Simd>(ctx: &S) -> S::[<$u>] {
 				let n = S::$lanes;
+				// The same shuffle as `load2`, so each lane names its pair.
+				#[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
+				if const { neon_pairs::<S::[<$v>], $ty>() } {
+					let _ = ctx;
+					// SAFETY: `$iota2` holds 64 indices, more than the `2 lanes`
+					// `vld2q` reads, and an index register has the size of a
+					// value register; see `load2`.
+					let pair = unsafe { core::arch::aarch64::$vld2u($iota2.as_ptr()) };
+					// SAFETY: as above.
+					return unsafe { core::mem::transmute_copy(&pair.0) };
+				}
 				let words: [S::[<$u>]; 2] = [
 					ctx.[<partial_load_ $u>](&$iota2[..n]),
 					ctx.[<partial_load_ $u>](&$iota2[n..2 * n]),
 				];
-				// The same shuffle as `load2`, so each lane names its pair.
 				let [first, _] = ctx.[<deinterleave_shfl_ $v>](words);
 				first
 			}
@@ -527,5 +586,11 @@ macro_rules! impl_native {
 	};
 }
 
-impl_native!(f64, u64, F64_LANES, f64s, m64s, u64s, IOTA_64, IOTA2_64);
-impl_native!(f32, u32, F32_LANES, f32s, m32s, u32s, IOTA_32, IOTA2_32);
+impl_native!(
+	f64, u64, F64_LANES, f64s, m64s, u64s, IOTA_64, IOTA2_64, vld2q_f64,
+	vst2q_f64, vld2q_u64
+);
+impl_native!(
+	f32, u32, F32_LANES, f32s, m32s, u32s, IOTA_32, IOTA2_32, vld2q_f32,
+	vst2q_f32, vld2q_u32
+);

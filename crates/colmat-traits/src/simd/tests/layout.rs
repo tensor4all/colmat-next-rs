@@ -146,3 +146,60 @@ fn masked_load_and_store() {
 	}
 	run_all::<C>();
 }
+
+/// `NativeSimd`'s pair loads and stores, on the path the build takes (`vld2q`/`vst2q` on NEON,
+/// #26), against the pair path through `pulp`'s deinterleave on the same input: the same
+/// registers bit for bit, `iota2` naming the pair of each lane, and `store2` writing the pairs
+/// back in place. A change to either interleave that moves a lane fails here.
+#[test]
+fn pair_lanes_match_the_deinterleave_path() {
+	use crate::NativeSimd;
+	use crate::SimdPairs;
+
+	macro_rules! check {
+		($ty:ty, $v:ident, $u:ident, $lanes:ident) => {{
+			struct C;
+			impl pulp::WithSimd for C {
+				type Output = ();
+				fn with_simd<S: Simd>(self, simd: S) {
+					paste::paste! {
+						let n = S::$lanes;
+						let src: Vec<[$ty; 2]> =
+							(0..n).map(|i| [(2 * i + 1) as $ty, -((2 * i + 2) as $ty)]).collect();
+
+						let (first, second) =
+							<NativeSimd as SimdPairs<$ty>>::load2(&simd, &src);
+						// the pair path: a copy of the memory, then `pulp`'s deinterleave
+						let words: [S::$v; 2] =
+							bytemuck::pod_read_unaligned(bytemuck::cast_slice(&src));
+						let [want_first, want_second] = simd.[<deinterleave_shfl_ $v>](words);
+						assert_eq!(bytemuck::bytes_of(&first), bytemuck::bytes_of(&want_first));
+						assert_eq!(bytemuck::bytes_of(&second), bytemuck::bytes_of(&want_second));
+
+						// lane `l` holds pair `iota2[l]`, in both registers
+						let iota: Vec<usize> = bytemuck::cast_slice::<u8, $u>(bytemuck::bytes_of(
+							&<NativeSimd as SimdPairs<$ty>>::iota2(&simd),
+						))
+						.iter()
+						.map(|&x| x as usize)
+						.collect();
+						let a = bytemuck::cast_slice::<u8, $ty>(bytemuck::bytes_of(&first));
+						let b = bytemuck::cast_slice::<u8, $ty>(bytemuck::bytes_of(&second));
+						for l in 0..n {
+							assert_eq!(a[l], src[iota[l]][0], "lane {l}");
+							assert_eq!(b[l], src[iota[l]][1], "lane {l}");
+						}
+
+						let mut dst = vec![[0 as $ty; 2]; n];
+						<NativeSimd as SimdPairs<$ty>>::store2(&simd, &mut dst, first, second);
+						assert_eq!(dst, src);
+					}
+				}
+			}
+			pulp::Arch::new().dispatch(C);
+			pulp::Scalar::new().vectorize(C);
+		}};
+	}
+	check!(f64, f64s, u64, F64_LANES);
+	check!(f32, f32s, u32, F32_LANES);
+}
