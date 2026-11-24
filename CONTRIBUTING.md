@@ -25,9 +25,14 @@ This file only records what is specific to `colmat-next-rs`:
 
 ## Anything here that departs from the shared rules
 
-None. Miri runs nightly over the lib tests and doctests of `colmat-traits` and `colmat-core` (`heavy-tests.yml`),
-once under Stacked Borrows and once under Tree Borrows (#16); tests that build a threadteam pool are skipped under
-Miri, which does not support the foreign functions the pool calls (#20). Kani proves the harnesses of
+None. Miri runs weekly (Sunday 18:00 UTC, #31) over the lib tests and doctests of `colmat-traits` and `colmat-core`
+(`heavy-tests.yml`), once under Stacked Borrows and once under Tree Borrows (#16); tests that build a threadteam pool
+are skipped under Miri, which does not support the foreign functions the pool calls (#20). It ran nightly until #31:
+the two jobs had become 47 of the 51 runner-minutes of a night. What weekly costs: a Miri failure caused outside the
+unsafe code, such as a dependency update or a test that grows (as in #21), now surfaces up to a week later instead of
+the next morning. Two things cover the rest. A pull request that adds or changes unsafe code runs Miri locally (both
+aliasing models, the commands in `heavy-tests.yml`) and puts the result in its `## Verification`. And Miri can be run
+on a branch before it merges: `gh workflow run heavy-tests.yml --ref <branch>` runs every job of the workflow. Kani proves the harnesses of
 `crates/colmat-core/src/kani_proofs.rs` nightly (#17, a trial: `cargo kani -p colmat-core`, kani-verifier 0.68.0), on an arm64 runner because Kani cannot build `pulp`'s x86-64 global assembly (#21). None of these runs in the
 push/PR pipeline: they need nightly toolchains and exceed the CI budget. The property tests (`prop_*`) run 256 cases per PR and 65 536 nightly
 (`PROPTEST_CASES`). Mutation testing (`cargo mutants -p colmat-traits --profile ci`) runs weekly and on demand

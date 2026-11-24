@@ -1,6 +1,6 @@
 //! Regression tests for the soundness defects inherited from colmat-rs (#14;
 //! reported as tensor4all/colmat-rs#254, #255 and #256). Each one failed under
-//! Miri before its fix; the nightly Miri job runs them.
+//! Miri before its fix; the scheduled Miri jobs run them.
 
 use crate::internal_prelude::*;
 use crate::perm::{Perm, PermRef};

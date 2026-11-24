@@ -222,7 +222,7 @@ fn shapes() -> Vec<(usize, usize, usize)> {
 /// Every layout of `dst`, `lhs` and `rhs` (one in three triples), each conjugation and both
 /// accumulation modes. Under Miri, which runs these about a thousand times slower, each layout
 /// of each operand appears once (16 triples per shape) with one of the eight modes, so the
-/// unsafe loads and stores of every layout are still checked within the nightly budget (#21).
+/// unsafe loads and stores of every layout are still checked within the scheduled Miri jobs' limit (#21).
 fn exhaustive<T: TestScalar>() {
 	let mut rng = Rng(0x5eed);
 	let modes = |t: usize| {
@@ -285,7 +285,7 @@ fn matmul_matches_the_reference_f64() {
 }
 #[test]
 // The same kernels as `f64`/`c64` at another lane count, which `utils::simd`'s walk test covers
-// under Miri; skipped there to keep the nightly Miri jobs within their limit (#21).
+// under Miri; skipped there to keep the scheduled Miri jobs within their limit (#21).
 #[cfg_attr(
 	miri,
 	ignore = "covered by the f64/c64 cases and the simd walk test under Miri"
@@ -299,7 +299,7 @@ fn matmul_matches_the_reference_c64() {
 }
 #[test]
 // The same kernels as `f64`/`c64` at another lane count, which `utils::simd`'s walk test covers
-// under Miri; skipped there to keep the nightly Miri jobs within their limit (#21).
+// under Miri; skipped there to keep the scheduled Miri jobs within their limit (#21).
 #[cfg_attr(
 	miri,
 	ignore = "covered by the f64/c64 cases and the simd walk test under Miri"
