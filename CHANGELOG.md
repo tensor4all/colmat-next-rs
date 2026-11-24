@@ -20,6 +20,14 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- `colmat-traits` (#26): on NEON, `NativeSimd`'s full pair loads and stores (the registers of
+  `Complex<f32>`/`Complex<f64>`) are one `vld2q`/`vst2q` on memory instead of a deinterleave
+  through a stack copy. The path is chosen from the register's size (16 bytes, NEON enabled at
+  compile time), not the instruction set's identity; Miri and other targets keep the previous
+  path. On an Apple M1 Pro the complex axpy now runs at the speed of the hand-written NEON loop
+  (it took 1.43-1.48x), and `c64`/`c32` column-major matrix-vector products went from 1.58-1.76x
+  colmat-rs `71337cdc` to 1.09-1.16x, rank-one updates from 1.32-1.42x to 0.88x.
+
 - CI (#21): the nightly `kani` job runs on `ubuntu-24.04-arm`. On x86-64 it could not build:
   `pulp`'s build script emits global assembly there, which Kani does not support.
 - Tests (#21): under Miri, `lower_area_parts_keeps_every_part_non_empty` skips the 2048 and 4096
