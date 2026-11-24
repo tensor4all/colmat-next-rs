@@ -34,7 +34,8 @@ participant here (below).
 - **The driver keeps the shapes that need no packing.** The empty, matrix-vector and rank-one
   cases run the generic kernels for every scalar before the hook is called. A provider that
   supplies only a packed product still gets those paths.
-- **Parallel regions split the output, never the depth.** colmat-rs's column-major
+- **Parallel regions split the output, never the depth** (changed by #28 for the column-major
+  matrix-vector product above a measured size: `2026-11-23-team-matmul.md`). colmat-rs's column-major
   matrix-vector product split the depth and kept the partial sums in a thread-local
   (`with_partials`). The workspace rule of the design record (§5) forbids that thread-local.
   Splitting the rows (matrix-vector), the columns (rank one) or the columns then the rows

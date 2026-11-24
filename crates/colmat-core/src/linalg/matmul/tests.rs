@@ -357,7 +357,8 @@ fn mismatched_shapes_panic() {
 
 /// On a team the product splits the output, never the depth, so every element is computed in
 /// the same order as on one thread: the result is bitwise that of `Par::Seq`, and the parallel
-/// path did run.
+/// path did run. The column-major matrix-vector product splits its depth above the size of
+/// `generic::depth_split` (`team_matvec_depth_split_*` below); the shapes here stay below it.
 #[cfg(all(feature = "threadteam", not(miri)))]
 #[test]
 fn team_result_is_bitwise_seq() {
@@ -367,7 +368,7 @@ fn team_result_is_bitwise_seq() {
 	for &(m, n, k) in &[
 		(256usize, 256usize, 256usize),
 		(256, 3, 256),
-		(2048, 1, 2048),
+		(4096, 1, 512),
 		(1, 2048, 2048),
 		(2048, 2048, 1),
 	] {
@@ -388,4 +389,185 @@ fn team_result_is_bitwise_seq() {
 		assert!(ran > 0, "{m}x{n}x{k}: the team path did not run");
 		assert!(team == seq, "{m}x{n}x{k}: team result differs from Seq");
 	}
+}
+
+/// The shapes of the depth split of the column-major matrix-vector product for `T`: an
+/// `m x 1` product of depth `k` (`rhs_row_major` false) or a `1 x m` product whose `rhs` is
+/// row-major (true), which the driver computes transposed. Larger than 8 MiB, and with columns
+/// of 512 bytes.
+#[cfg(all(feature = "threadteam", not(miri)))]
+fn depth_split_shapes<T>() -> [(usize, usize, bool); 3] {
+	let short = 512 / core::mem::size_of::<T>();
+	[
+		(2100, 1024, false),
+		(short, 8193, false),
+		(2100, 1024, true),
+	]
+}
+
+/// Above the size of `generic::depth_split`, a team splits the depth of the column-major
+/// matrix-vector product, so its result rounds differently from `Par::Seq`. It is held to the
+/// reference bound, for both accumulations and every conjugation, and runs the team path.
+#[cfg(all(feature = "threadteam", not(miri)))]
+fn team_matvec_depth_split<T: TestScalar>() {
+	use crate::utils::team::{stats, with_team};
+	let mut rng = Rng(23);
+	for (m, k, rhs_row_major) in depth_split_shapes::<T>() {
+		assert!(
+			generic::depth_split::<T>(m, k),
+			"{m}x{k} is below the split"
+		);
+		let a = Mat::<T>::from_fn(m, k, |_, _| T::new(rng.next(), rng.next()));
+		let x = Mat::<T>::from_fn(k, 1, |_, _| T::new(rng.next(), rng.next()));
+		let xt = Mat::<T>::from_fn(1, k, |_, j| x[(j, 0)]);
+		let d0 = Mat::<T>::from_fn(m, 1, |_, _| T::new(rng.next(), rng.next()));
+		let alpha = T::new(0.75, -0.5);
+		for width in [2, 3, 4] {
+			for accum in [Accum::Replace, Accum::Add] {
+				for (conj_lhs, conj_rhs) in [
+					(Conj::No, Conj::No),
+					(Conj::Yes, Conj::No),
+					(Conj::No, Conj::Yes),
+				] {
+					let mut d = d0.clone();
+					let mut dt = Mat::<T>::from_fn(1, m, |_, i| d0[(i, 0)]);
+					let ran = with_team(width, |par| {
+						let mut buf =
+							dyn_stack::MemBuffer::new(if rhs_row_major {
+								matmul_scratch::<T>(1, m, k, par.shape())
+							} else {
+								matmul_scratch::<T>(m, 1, k, par.shape())
+							});
+						stats::enable(true);
+						let _ = stats::take();
+						if rhs_row_major {
+							// `dt = x^T * a^T`, with `a^T` row-major
+							matmul_with_scratch(
+								&mut dt,
+								accum,
+								&xt,
+								conj_rhs,
+								a.transpose(),
+								conj_lhs,
+								alpha,
+								par,
+								MemStack::new(&mut buf),
+							);
+						} else {
+							matmul_with_scratch(
+								&mut d,
+								accum,
+								&a,
+								conj_lhs,
+								&x,
+								conj_rhs,
+								alpha,
+								par,
+								MemStack::new(&mut buf),
+							);
+						}
+						stats::enable(false);
+						let s = stats::take();
+						s.run.iter().skip(2).sum::<usize>()
+							+ s.split.iter().skip(2).sum::<usize>()
+					});
+					assert!(
+						ran > 0,
+						"{m}x{k} on {width}: the team path did not run"
+					);
+					for i in 0..m {
+						let got =
+							if rhs_row_major { dt[(0, i)] } else { d[(i, 0)] };
+						let (want, bound) = reference(
+							d0[(i, 0)],
+							accum,
+							|p| a[(i, p)],
+							conj_lhs,
+							|p| x[(p, 0)],
+							conj_rhs,
+							alpha,
+							k,
+						);
+						let (g, w) = (got.parts(), want);
+						let err = abs((g.0 - w.0, g.1 - w.1));
+						assert!(
+							err <= bound,
+							"{m}x{k} on {width} {accum:?} {conj_lhs:?} {conj_rhs:?} row {i}: \
+							 {err} > {bound}"
+						);
+					}
+				}
+			}
+		}
+	}
+}
+
+/// The depth split is the same on every call of the same width: the partition of the depth and
+/// the order in which the partial sums are added depend on the shape and the width only.
+#[cfg(all(feature = "threadteam", not(miri)))]
+#[test]
+fn team_matvec_depth_split_is_deterministic_per_width() {
+	use crate::utils::team::with_team;
+	let mut rng = Rng(29);
+	let (m, k) = (2100, 1024);
+	let a = Mat::<f64>::from_fn(m, k, |_, _| rng.next());
+	let x = Mat::<f64>::from_fn(k, 1, |_, _| rng.next());
+	for width in [2, 3, 4] {
+		let run = || {
+			let mut d = Mat::<f64>::zeros(m, 1);
+			with_team(width, |par| {
+				matmul(&mut d, Accum::Replace, &a, &x, 1.5, par)
+			});
+			d
+		};
+		let first = run();
+		for _ in 0..3 {
+			assert!(run() == first, "width {width}: the result changed");
+		}
+	}
+}
+
+#[cfg(all(feature = "threadteam", not(miri)))]
+#[test]
+fn team_matvec_depth_split_f64() {
+	team_matvec_depth_split::<f64>();
+}
+
+#[cfg(all(feature = "threadteam", not(miri)))]
+#[test]
+fn team_matvec_depth_split_f32() {
+	team_matvec_depth_split::<f32>();
+}
+
+#[cfg(all(feature = "threadteam", not(miri)))]
+#[test]
+fn team_matvec_depth_split_c64() {
+	team_matvec_depth_split::<c64>();
+}
+
+#[cfg(all(feature = "threadteam", not(miri)))]
+#[test]
+fn team_matvec_depth_split_c32() {
+	team_matvec_depth_split::<c32>();
+}
+
+/// The rule of the depth split, on the shapes it was measured at (#28).
+#[test]
+fn depth_split_rule() {
+	use generic::depth_split;
+	// shallow: always the rows
+	assert!(!depth_split::<f64>(16384, 256));
+	assert!(!depth_split::<f32>(64, 1023));
+	// cache resident with long columns: the rows
+	assert!(!depth_split::<f64>(256, 4096));
+	assert!(!depth_split::<f64>(1024, 1024));
+	assert!(!depth_split::<c32>(1024, 1024));
+	// larger than 8 MiB
+	assert!(depth_split::<f64>(1024, 1025));
+	assert!(depth_split::<f32>(1024, 4096));
+	assert!(depth_split::<c64>(256, 4096 + 1));
+	// columns of at most 512 bytes
+	assert!(depth_split::<f64>(64, 1024));
+	assert!(depth_split::<c64>(32, 1024));
+	assert!(!depth_split::<c64>(33, 1024));
 }

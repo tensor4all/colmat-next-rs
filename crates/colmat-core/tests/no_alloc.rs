@@ -150,15 +150,21 @@ fn check_matmul<T: colmat_core::kernels::KernelField + Copy>(
 ) {
 	let degree = par.degree();
 	// (m, n, k, lhs row-major): `nano-gemm`; column-major matrix-vector; row-major
-	// matrix-vector (a row `dst` times a column-major `rhs`); rank one
+	// matrix-vector (a row `dst` times a column-major `rhs`); rank one; and the column-major
+	// matrix-vector product whose depth a team splits, with its partial sums in the scratch
+	// (#28; larger than 8 MiB for every scalar here, not run under Miri)
 	let shapes = [
 		(17usize, 9usize, 13usize, false),
 		(300, 1, 200, false),
 		(300, 1, 200, true),
 		(1, 300, 200, false),
 		(300, 200, 1, false),
+		(2100, 1, 1024, false),
 	];
 	for (m, n, k, lhs_row_major) in shapes {
+		if cfg!(miri) && m * k > 1 << 20 {
+			continue;
+		}
 		let a = Mat::from_fn(m, k, |i, j| v(i + 3 * j));
 		let at = Mat::from_fn(k, m, |j, i| v(i + 3 * j));
 		let b = Mat::from_fn(k, n, |i, j| v(2 * i + j));

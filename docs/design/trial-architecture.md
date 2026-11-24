@@ -134,6 +134,16 @@ until recorded in meta.
   (meta §7a's layout puts `threadteam` under `colmat-core`). The team skeletons deal a
   `colmat-core` trait (`utils::thread::Producer`) rather than rayon's producer (debt K7), so the
   view types and the skeletons name no rayon item (#20).
+- **Rounding on a team (#28).** A product on a team splits its output and computes every element
+  as `Par::Seq` does, so the result is bitwise the same, with one exception. A column-major
+  matrix-vector product above the size of `depth_split` (a depth of at least 1024, and a matrix
+  larger than 8 MiB or columns of at most 512 bytes, measured on an Apple M1 Pro) splits its
+  depth, as colmat-rs did: each participant sums its block of columns, and the partial sums are
+  added in order. That result rounds differently from `Par::Seq`, within the same error bound,
+  and is the same on every call of the same width, since the partition and the order of the
+  addition depend on the shape and the width only. The partial sums (`nrows x width`) come from
+  the caller's scratch: `matmul_scratch` asks for them when `par` is a team and the shape takes
+  the split.
 - **Drivers.** Factorisations call primitives and shared leaves only. Panel leaves (pivot search
   plus rank-1/2 update), layout copies and the cost queries are public items of `colmat-core` or
   `colmat`, so an alternative driver or an algorithm outside the crate can reuse them. An
