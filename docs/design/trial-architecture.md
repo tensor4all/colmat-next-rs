@@ -194,4 +194,4 @@ Each step is an issue and a pull request in this repository.
   exception handling) remain open; this trial's choices in §5 are inputs to that review.
 - Licences of `qd` and `xprec` for anything ported or depended on from them: to be checked before
   `colmat-xprec` starts.
-- Final crate names, publishing and the licence of this repository belong to the maintainers.
+- Final crate names and publishing belong to the maintainers. The licence is MIT (#29).

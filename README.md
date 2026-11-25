@@ -34,6 +34,6 @@ with status "design under review".
 
 ## License
 
-MIT for now; see [`LICENSE`](LICENSE). This is a placeholder: the license choice belongs to the
-maintainers and has not been made. Code ported from colmat-rs or faer keeps its upstream notices; see
-[`NOTICE`](NOTICE) and [`REPOSITORY_RULES.md`](REPOSITORY_RULES.md).
+MIT; see [`LICENSE`](LICENSE). The maintainers chose MIT over a dual MIT/Apache-2.0 license
+(#29), since the code ported from faer and colmat-rs is MIT only. Ported code keeps its upstream
+notices; see [`NOTICE`](NOTICE) and [`REPOSITORY_RULES.md`](REPOSITORY_RULES.md).
