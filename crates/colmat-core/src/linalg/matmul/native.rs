@@ -194,6 +194,19 @@ where
 			x86_req(T::DTYPE, instr, r, c, k)
 		});
 	}
+	// `t4a-gemm` probes the host for SME once per process, on its first product, through
+	// `sysctl` calls that allocate. Probe here, in the query, so that the product that follows
+	// allocates nothing even when it is the first of the process. After the first call this
+	// is two atomic loads.
+	#[cfg(all(
+		target_arch = "aarch64",
+		target_vendor = "apple",
+		feature = "apple-sme"
+	))]
+	{
+		use gemm_common::cache::HasAppleSme;
+		let _ = (HasAppleSme::get(), HasAppleSme::get_f32());
+	}
 	split_product_scratch(m, n, k, par, ns, |r, c| {
 		gemm::gemm_scratch::<T>(r, c, k, gemm::Parallelism::None)
 	})

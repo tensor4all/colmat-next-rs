@@ -80,6 +80,10 @@ What `matmul_with_scratch` still pays at small sizes:
 
 `matmul` is back to `main`'s times.
 
+## The host probe of `t4a-gemm`
+
+With `apple-sme`, `t4a-gemm` probes the host for SME once per process, on its first product, through `sysctl` calls that allocate (nine allocations). The first-call no-allocation test caught it in CI, where that test ran first in its process; run alone, it fails the same way locally. `NativeKernels::gemm_scratch` now makes the probe itself (`HasAppleSme::get`, `get_f32`), so the query takes that one-time cost and the product that follows allocates nothing. After the first call the probe is two atomic loads.
+
 ## Verification
 
 - `cargo test --workspace --profile ci`, with and without `--all-features`, on aarch64.
