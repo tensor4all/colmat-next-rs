@@ -9,6 +9,8 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- Licence (#29): MIT is the chosen licence, not a placeholder; `README.md`, `NOTICE`, the
+  workspace `Cargo.toml` and the design record say so.
 - CI (#31): the two Miri jobs of `heavy-tests.yml` run weekly (Sunday 18:00 UTC) instead of
   nightly; `heavy` and `kani` stay nightly, and `workflow_dispatch` still runs every job. The
   failure report runs after both schedules. `CONTRIBUTING.md` states what this costs.

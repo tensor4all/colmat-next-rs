@@ -6,7 +6,7 @@ resolver = "3"
 edition = "2024"
 # Keep in sync with the `msrv` job in `.github/workflows/ci.yml`.
 rust-version = "1.89"
-# Placeholder licence (README, "License"); crates that port faer code keep faer's MIT notice.
+# MIT, chosen by the maintainers (#29); crates that port faer code also keep faer's MIT notice.
 license = "MIT"
 repository = "https://github.com/tensor4all/colmat-next-rs"
 publish = false
