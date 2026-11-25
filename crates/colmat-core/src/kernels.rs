@@ -14,8 +14,9 @@
 //!   `lhs` or `rhs` (the borrows guarantee it);
 //! - the result is `dst ← α·conj?(lhs)·conj?(rhs)` for [`Accum::Replace`] and
 //!   `dst ← dst + α·conj?(lhs)·conj?(rhs)` for [`Accum::Add`]; with `Replace`, `dst` is not read;
-//! - `stack` holds at least [`Gemm::gemm_scratch`] for the same shape and parallelism, and the
-//!   call allocates nothing beyond it, except where the provider's documentation says otherwise;
+//! - for [`Gemm::gemm`], `stack` holds at least [`Gemm::gemm_scratch`] for the same shape and
+//!   parallelism, and the call allocates nothing beyond it; [`Gemm::gemm_alloc`] finds its
+//!   memory itself and may allocate;
 //! - the call runs on the participants of `par` only.
 //!
 //! The driver ([`crate::linalg::matmul`]) handles the empty, vector and rank-one cases before it
@@ -29,7 +30,7 @@ use crate::mat::{MatMut, MatRef};
 use crate::{Accum, Conj, Par, ParShape};
 use colmat_traits::ComplexField;
 pub use colmat_traits::{GenericKernels, NativeKernels};
-use dyn_stack::{MemStack, StackReq};
+use dyn_stack::{MemBuffer, MemStack, StackReq};
 
 /// P1, the matrix product: `dst ← α·op(lhs)·op(rhs)` or `dst ← dst + α·op(lhs)·op(rhs)`.
 ///
@@ -58,6 +59,39 @@ pub trait Gemm<T: ComplexField>:
 		par: Par<'_>,
 		stack: &mut MemStack,
 	);
+
+	/// The product with working memory the provider finds itself: what the allocating entries
+	/// ([`matmul`](crate::linalg::matmul::matmul) and
+	/// [`matmul_with_conj`](crate::linalg::matmul::matmul_with_conj)) call, so that a provider
+	/// may keep its memory between calls (in thread-locals, say) instead of having it
+	/// allocated for every call. It may allocate; otherwise the contract is that of
+	/// [`Gemm::gemm`].
+	///
+	/// The default allocates [`Gemm::gemm_scratch`] (nothing when it is empty) and calls
+	/// [`Gemm::gemm`].
+	///
+	/// New in this trial (#34).
+	#[allow(clippy::too_many_arguments)]
+	fn gemm_alloc(
+		dst: MatMut<'_, T, usize, usize>,
+		accum: Accum,
+		lhs: MatRef<'_, T, usize, usize>,
+		conj_lhs: Conj,
+		rhs: MatRef<'_, T, usize, usize>,
+		conj_rhs: Conj,
+		alpha: &T,
+		par: Par<'_>,
+	) {
+		let (m, n) = dst.shape();
+		let req = Self::gemm_scratch(m, n, lhs.ncols(), par.shape());
+		let mut empty = [];
+		let mut buf = (req.size_bytes() != 0).then(|| MemBuffer::new(req));
+		let stack = match &mut buf {
+			Some(buf) => MemStack::new(buf),
+			None => MemStack::new(&mut empty),
+		};
+		Self::gemm(dst, accum, lhs, conj_lhs, rhs, conj_rhs, alpha, par, stack)
+	}
 }
 
 /// A scalar whose kernel provider implements every hook: what the drivers of this crate ask for.

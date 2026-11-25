@@ -9,6 +9,14 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- `colmat-core` (#34): `matmul_with_scratch` takes the packing memory of the packed native
+  products (`f32`, `f64`, `c32`, `c64`) from its stack as well, through the `gemm_with_stack`
+  entries of `t4a-gemm` and `t4a-private-gemm-x86`, so it allocates nothing from the first call
+  on; `matmul_scratch` now asks for that memory. On x86-64 it is about twice the L3 size per
+  participant for every such product above `16^3` multiply-adds, as the rustdoc says. `matmul`
+  and `matmul_with_conj` keep the kernels' thread-locals through a new provided method,
+  `Gemm::gemm_alloc`. Both kernels are pinned by git revision until their releases (TODOs in
+  the workspace `Cargo.toml`). Work log: `docs/worklogs/2026-11-25-native-with-stack.md`.
 - Licence (#29): MIT is the chosen licence, not a placeholder; `README.md`, `NOTICE`, the
   workspace `Cargo.toml` and the design record say so.
 - CI (#31): the two Miri jobs of `heavy-tests.yml` run weekly (Sunday 18:00 UTC) instead of

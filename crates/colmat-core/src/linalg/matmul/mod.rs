@@ -2,11 +2,12 @@
 //!
 //! Two entries:
 //!
-//! - [`matmul_with_scratch`] takes its working memory from a [`MemStack`] sized with
-//!   [`matmul_scratch`], and allocates nothing else (design record §5, "Workspace"), with one
-//!   exception for now: the packed products of `f32`, `f64`, `c32` and `c64` (see its
-//!   "Allocation" section);
-//! - [`matmul`] and [`matmul_with_conj`] size and allocate that memory themselves, once per call.
+//! - [`matmul_with_scratch`] takes all its working memory from a [`MemStack`] sized with
+//!   [`matmul_scratch`], and allocates nothing else (design record §5, "Workspace"), from the
+//!   first call on (#34);
+//! - [`matmul`] and [`matmul_with_conj`] allocate the driver's own scratch, once per call, and
+//!   let the kernel provider find its memory itself ([`Gemm::gemm_alloc`]): the packed kernels of
+//!   `f32`, `f64`, `c32` and `c64` keep theirs in thread-locals (see their "Allocation" sections).
 //!
 //! The driver here handles the empty, vector and rank-one cases with the generic kernels of
 //! [`generic`], and hands every other product to the scalar's kernel provider
@@ -49,10 +50,31 @@ fn precondition<M: Shape, N: Shape, K: Shape>(
 /// The scratch [`matmul_with_scratch`] needs for an `m x n` product of depth `k` on `par`.
 ///
 /// It depends on the shape and the parallelism only, not on the strides or the conjugation.
-/// Besides the kernel provider's own, it holds the partial sums of a column-major
-/// matrix-vector product whose depth a team splits (`nrows x width` elements, #28): see
-/// [`matmul_with_scratch`], "Rounding on a team".
+/// It holds the kernel provider's own ([`Gemm::gemm_scratch`]), and the partial sums of a
+/// column-major matrix-vector product whose depth a team splits (`nrows x width` elements,
+/// #28): see [`matmul_with_scratch`], "Rounding on a team". On x86-64 the packed products of
+/// `f32`, `f64`, `c32` and `c64` ask for about twice the L3 size per participant whatever
+/// their shape: see [`matmul_with_scratch`], "Allocation".
 pub fn matmul_scratch<T: KernelField>(
+	m: usize,
+	n: usize,
+	k: usize,
+	par: ParShape,
+) -> StackReq {
+	if m == 0 || n == 0 || k == 0 {
+		return StackReq::EMPTY;
+	}
+	// The general product: every shape reaches it when its layout has no shortcut (a strided
+	// vector, a rank-one product whose `dst` is neither column- nor row-major), and the query
+	// does not see the layout.
+	let general = <T::Kernels as Gemm<T>>::gemm_scratch(m, n, k, par);
+	driver_scratch::<T>(m, n, k, par).or(general)
+}
+
+/// The scratch of the driver itself, without the kernel provider's: the partial sums of a
+/// column-major matrix-vector product whose depth a team splits. What the allocating entries
+/// allocate, since their provider finds its own memory ([`Gemm::gemm_alloc`]).
+fn driver_scratch<T: KernelField>(
 	m: usize,
 	n: usize,
 	k: usize,
@@ -61,22 +83,17 @@ pub fn matmul_scratch<T: KernelField>(
 	if m == 0 || n == 0 || k <= 1 {
 		return StackReq::EMPTY;
 	}
-	if m == 1 || n == 1 {
-		// a column-major matrix-vector product on a team; the general product these shapes
-		// fall back to needs no scratch
-		let col = if n == 1 {
-			generic::matvec_colmajor_scratch::<T>(m, k, par)
-		} else {
-			StackReq::EMPTY
-		};
-		let row = if m == 1 {
-			generic::matvec_colmajor_scratch::<T>(n, k, par)
-		} else {
-			StackReq::EMPTY
-		};
-		return col.or(row);
-	}
-	<T::Kernels as Gemm<T>>::gemm_scratch(m, n, k, par)
+	let col = if n == 1 {
+		generic::matvec_colmajor_scratch::<T>(m, k, par)
+	} else {
+		StackReq::EMPTY
+	};
+	let row = if m == 1 {
+		generic::matvec_colmajor_scratch::<T>(n, k, par)
+	} else {
+		StackReq::EMPTY
+	};
+	col.or(row)
 }
 
 /// `dst ← α·op(lhs)·op(rhs)` (for [`Accum::Replace`]; `dst` is then not read) or
@@ -88,28 +105,17 @@ pub fn matmul_scratch<T: KernelField>(
 ///
 /// # Allocation
 ///
-/// Nothing is allocated, from the first call on, by the paths that need no packing:
+/// Nothing is allocated, from the first call on, on any path: the packed products of `f32`,
+/// `f64`, `c32` and `c64` take their packing memory from `stack` too (#34). The entry computes
+/// [`matmul_scratch`] once, to check `stack`; a packed product on a team then sizes one part of
+/// `stack` per tile for the width it runs at.
 ///
-/// - the empty cases;
-/// - the matrix-vector and rank-one cases whose vector and matrix are contiguous along the
-///   product (a strided one is computed as a general product);
-/// - products of at most `16^3` multiply-adds;
-/// - every product of a scalar whose kernel provider is
-///   [`GenericKernels`](crate::kernels::GenericKernels).
-///
-/// **The packed products of `f32`, `f64`, `c32` and `c64` allocate**, until their kernels take
-/// scratch from the caller. They run `t4a-gemm` (`t4a-private-gemm-x86` on x86-64), which keeps
-/// its packing memory in thread-locals:
-///
-/// - `t4a-gemm` allocates on a thread's first call (an L2-sized buffer and the pack buffer),
-///   and on every call whose pack exceeds the L2 size;
-/// - `t4a-private-gemm-x86` allocates on a thread's first call, and when a product needs more
-///   than the memory it holds.
-///
-/// After one call of the same shape on the same threads, a product whose pack fits in L2
-/// allocates nothing on aarch64. The entries that remove this exception are
-/// tensor4all/t4a-gemm#21 and tensor4all/t4a-private-gemm-x86#14; [`matmul_scratch`] stays empty
-/// for these products until then.
+/// **On x86-64 the request does not shrink with the shape.** `t4a-private-gemm-x86` asks for
+/// its L3-sized packing buffers whatever the shape, so for these four types [`matmul_scratch`]
+/// is about twice the L3 size per participant for every product above `16^3` multiply-adds: on
+/// a host with a 32 MiB L3, about 64 MiB for a `17^3` product, and four times that on a team of
+/// four. [`matmul`] and [`matmul_with_conj`] do not take their memory from a stack, so this
+/// reaches only a caller of this entry.
 ///
 /// # Rounding on a team
 ///
@@ -166,6 +172,7 @@ pub fn matmul_with_scratch<T: KernelField, M: Shape, N: Shape, K: Shape>(
 		&alpha,
 		par,
 		stack,
+		Packing::Stack,
 	);
 }
 
@@ -173,9 +180,17 @@ pub fn matmul_with_scratch<T: KernelField, M: Shape, N: Shape, K: Shape>(
 ///
 /// # Allocation
 ///
-/// This entry allocates the scratch of [`matmul_scratch`] once per call (nothing when it is
-/// empty: the vector and rank-one cases and the generic kernels need none). Code that must not
-/// allocate calls [`matmul_with_scratch`] instead.
+/// This entry allocates, once per call, the driver's own scratch: the partial sums of a
+/// column-major matrix-vector product whose depth a team splits, and nothing for any other
+/// product. The kernel provider finds its memory itself ([`Gemm::gemm_alloc`]): the packed
+/// products of `f32`, `f64`, `c32` and `c64` keep theirs in thread-locals, so
+///
+/// - `t4a-gemm` allocates on a thread's first call (an L2-sized buffer and the pack buffer),
+///   and on every call whose pack exceeds the L2 size;
+/// - `t4a-private-gemm-x86` (x86-64) allocates on a thread's first call, and when a product
+///   needs more than the memory it holds.
+///
+/// Code that must not allocate calls [`matmul_with_scratch`] instead.
 ///
 /// # Panics
 ///
@@ -209,7 +224,8 @@ pub fn matmul_with_conj<T: KernelField, M: Shape, N: Shape, K: Shape>(
 		dst.ncols().unbound(),
 		lhs.ncols().unbound(),
 	);
-	let req = matmul_scratch::<T>(m, n, k, par.shape());
+	// the driver's own scratch only: the kernel provider finds its memory itself
+	let req = driver_scratch::<T>(m, n, k, par.shape());
 	// no buffer at all for an empty request: the common case, and a small product should not
 	// pay for the allocator's call
 	let mut empty = [];
@@ -218,8 +234,17 @@ pub fn matmul_with_conj<T: KernelField, M: Shape, N: Shape, K: Shape>(
 		Some(buf) => MemStack::new(buf),
 		None => MemStack::new(&mut empty),
 	};
-	matmul_with_scratch(
-		dst, accum, lhs, conj_lhs, rhs, conj_rhs, alpha, par, stack,
+	matmul_imp(
+		dst.as_dyn_mut().as_dyn_stride_mut(),
+		accum,
+		lhs.as_dyn().as_dyn_stride(),
+		conj_lhs,
+		rhs.as_dyn().as_dyn_stride(),
+		conj_rhs,
+		&alpha,
+		par,
+		stack,
+		Packing::Provider,
 	);
 }
 
@@ -228,8 +253,7 @@ pub fn matmul_with_conj<T: KernelField, M: Shape, N: Shape, K: Shape>(
 ///
 /// # Allocation
 ///
-/// As [`matmul_with_conj`]: the scratch of [`matmul_scratch`] once per call. Code that must not
-/// allocate calls [`matmul_with_scratch`] instead.
+/// As [`matmul_with_conj`]. Code that must not allocate calls [`matmul_with_scratch`] instead.
 ///
 /// # Panics
 ///
@@ -276,7 +300,16 @@ pub fn matmul<
 	)
 }
 
-/// The driver: shapes agree and `stack` holds [`matmul_scratch`].
+/// Where the kernel provider's working memory comes from.
+#[derive(Clone, Copy)]
+enum Packing {
+	/// From the stack ([`Gemm::gemm`]), which holds [`matmul_scratch`].
+	Stack,
+	/// From the provider ([`Gemm::gemm_alloc`]); the stack holds [`driver_scratch`].
+	Provider,
+}
+
+/// The driver: shapes agree and `stack` holds what `packing` says.
 #[allow(clippy::too_many_arguments)]
 fn matmul_imp<T: KernelField>(
 	dst: MatMut<'_, T, usize, usize>,
@@ -288,6 +321,7 @@ fn matmul_imp<T: KernelField>(
 	alpha: &T,
 	par: Par,
 	stack: &mut MemStack,
+	packing: Packing,
 ) {
 	let mut dst = dst;
 	let (m, n) = dst.shape();
@@ -389,9 +423,14 @@ fn matmul_imp<T: KernelField>(
 			return;
 		}
 	}
-	<T::Kernels as Gemm<T>>::gemm(
-		dst, accum, lhs, conj_lhs, rhs, conj_rhs, alpha, par, stack,
-	)
+	match packing {
+		Packing::Stack => <T::Kernels as Gemm<T>>::gemm(
+			dst, accum, lhs, conj_lhs, rhs, conj_rhs, alpha, par, stack,
+		),
+		Packing::Provider => <T::Kernels as Gemm<T>>::gemm_alloc(
+			dst, accum, lhs, conj_lhs, rhs, conj_rhs, alpha, par,
+		),
+	}
 }
 
 /// The product with a single column `dst` on a contiguous layout, if it has one. Hands `par`

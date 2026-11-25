@@ -739,9 +739,121 @@ pub(crate) fn gemm_generic<T: ComplexField>(
 	par: Par<'_>,
 ) {
 	let ns = <GenericKernels as Gemm<T>>::ns_per_mac();
-	split_product(dst, lhs, rhs, par, ns, |dst, lhs, rhs| {
-		gemm_generic_seq(dst, accum, lhs, conj_lhs, rhs, conj_rhs, alpha)
-	})
+	split_product(
+		dst,
+		lhs,
+		rhs,
+		par,
+		ns,
+		|_, _| StackReq::EMPTY,
+		MemStack::new(&mut []),
+		|dst, lhs, rhs, _| {
+			gemm_generic_seq(dst, accum, lhs, conj_lhs, rhs, conj_rhs, alpha)
+		},
+	)
+}
+
+/// The width [`split_product`] runs a product of serial time `estimate` at, on a team of
+/// `par`: 1 when no width pays, otherwise one of `2..=degree` (the query side cannot know
+/// which, so [`split_product_scratch`] covers them all).
+fn split_widths(
+	par: ParShape,
+	estimate: core::time::Duration,
+) -> core::ops::RangeInclusive<usize> {
+	let degree = par.degree();
+	// the same rejection as `par_width_time` (the cheapest width of the same cost table)
+	if degree < 2
+		|| !crate::utils::cost::pays_at(estimate, 1, par.min_dispatch_cost())
+	{
+		return 1..=1;
+	}
+	1..=degree
+}
+
+/// The tiles of [`split_product`] at `width`: the row height and column width of a tile, and
+/// the number of tile rows and columns; one tile covering `dst` below two participants.
+fn split_tiles(
+	m: usize,
+	n: usize,
+	width: usize,
+) -> (usize, usize, usize, usize) {
+	use crate::utils::partition::{COL_GRAIN, ROW_GRAIN, tile_grid};
+	let (pm, pn) = tile_grid(m, n, width.max(1));
+	if width < 2 || pm * pn <= 1 {
+		return (m, n, 1, 1);
+	}
+	let rh = m.div_ceil(pm).next_multiple_of(ROW_GRAIN).min(m);
+	let cw = n.div_ceil(pn).next_multiple_of(COL_GRAIN).min(n);
+	(rh, cw, m.div_ceil(rh), n.div_ceil(cw))
+}
+
+/// The bytes one tile's part of the stack takes at `width` (every tile shape of the grid
+/// fits, wherever its part starts), and the number of tiles; `(0, tiles)` when `tile_req` is
+/// empty for every shape.
+fn split_part_bytes(
+	m: usize,
+	n: usize,
+	width: usize,
+	mut tile_req: impl FnMut(usize, usize) -> StackReq,
+) -> (usize, usize) {
+	let (rh, cw, nrow, ncol) = split_tiles(m, n, width);
+	let tiles = nrow * ncol;
+	if tiles == 1 {
+		return (0, 1);
+	}
+	// the tile shapes: full ones, and the last row and column, which may be shorter
+	let (rl, cl) = (m - (nrow - 1) * rh, n - (ncol - 1) * cw);
+	let mut req = tile_req(rh, cw);
+	for (r, c) in [(rl, cw), (rh, cl), (rl, cl)] {
+		req = req.or(tile_req(r, c));
+	}
+	if req.size_bytes() == 0 {
+		return (0, tiles);
+	}
+	// a part starts anywhere in the stack: count the alignment in
+	let bytes = req.unaligned_bytes_required().next_multiple_of(64);
+	(bytes, tiles)
+}
+
+/// The scratch of [`split_product`] for an `m x n` product of depth `k` on `par`, when one
+/// call of `seq` on an `r x c` tile takes `tile_req(r, c)`: the larger of the whole product
+/// on one thread and one part per tile at every width the product may run at.
+pub(crate) fn split_product_scratch(
+	m: usize,
+	n: usize,
+	k: usize,
+	par: ParShape,
+	ns_per_mac: f64,
+	tile_req: impl Fn(usize, usize) -> StackReq,
+) -> StackReq {
+	let macs = m.saturating_mul(n).saturating_mul(k);
+	let estimate = crate::utils::cost::serial_time(macs, ns_per_mac);
+	// One evaluation of `tile_req` per distinct tile shape over all the widths: the grids of
+	// neighbouring widths often share their tiles, and a request is not cheap (#34). The
+	// shapes past the cache's size are evaluated each time.
+	let mut seen = [(0usize, 0usize, StackReq::EMPTY); 32];
+	let mut len = 0;
+	let mut cached = |r: usize, c: usize| {
+		if let Some(&(_, _, req)) =
+			seen[..len].iter().find(|&&(sr, sc, _)| (sr, sc) == (r, c))
+		{
+			return req;
+		}
+		let req = tile_req(r, c);
+		if len < seen.len() {
+			seen[len] = (r, c, req);
+			len += 1;
+		}
+		req
+	};
+	let mut req = cached(m, n);
+	for width in split_widths(par, estimate) {
+		let (bytes, tiles) = split_part_bytes(m, n, width, &mut cached);
+		if bytes != 0 {
+			req = req.or(StackReq::new::<u8>(bytes.saturating_mul(tiles)));
+		}
+	}
+	req
 }
 
 /// Runs a product on the width of `par` that its serial time (`ns_per_mac` per multiply-add)
@@ -750,20 +862,23 @@ pub(crate) fn gemm_generic<T: ComplexField>(
 /// [`ROW_GRAIN`]/[`COL_GRAIN`], as colmat-rs's `gemm_tiled`). The columns of the grid are dealt
 /// to sub-teams, each of which deals its rows. The depth is never split, so every element is
 /// computed as on one thread.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn split_product<T: ComplexField>(
 	dst: MatMut<'_, T, usize, usize>,
 	lhs: MatRef<'_, T, usize, usize>,
 	rhs: MatRef<'_, T, usize, usize>,
 	par: Par<'_>,
 	ns_per_mac: f64,
+	tile_req: impl Fn(usize, usize) -> StackReq,
+	stack: &mut MemStack,
 	seq: impl Sync
 	+ Fn(
 		MatMut<'_, T, usize, usize>,
 		MatRef<'_, T, usize, usize>,
 		MatRef<'_, T, usize, usize>,
+		&mut MemStack,
 	),
 ) {
-	use crate::utils::partition::{COL_GRAIN, ROW_GRAIN, tile_grid};
 	use crate::utils::thread::{for_each, for_each_with_par};
 	let (m, n) = dst.shape();
 	let k = lhs.ncols();
@@ -774,44 +889,134 @@ pub(crate) fn split_product<T: ComplexField>(
 		1,
 	);
 	crate::utils::thread::with_width(par, width, |par| {
-		let (pm, pn) = tile_grid(m, n, par.degree());
-		if matches!(par, Par::Seq) || pm * pn <= 1 {
-			return seq(dst, lhs, rhs);
+		let width = if matches!(par, Par::Seq) {
+			1
+		} else {
+			par.degree()
+		};
+		let (rh, cw, nrow, ncol) = split_tiles(m, n, width);
+		if nrow * ncol == 1 {
+			return seq(dst, lhs, rhs, stack);
 		}
-		let rh = m.div_ceil(pm).next_multiple_of(ROW_GRAIN).min(m);
-		let cw = n.div_ceil(pn).next_multiple_of(COL_GRAIN).min(n);
-		let (nrow, ncol) = (m.div_ceil(rh), n.div_ceil(cw));
+		// one part of the stack per tile, in the order of the tiles (column-major over the
+		// grid), each large enough for every tile shape
+		let (bytes, tiles) = split_part_bytes(m, n, width, &tile_req);
+		let (parts, _) = stack.make_aligned_uninit::<u8>(bytes * tiles, 1);
+		let parts = StackParts {
+			buf: parts,
+			bytes,
+			len: tiles,
+		};
 		if ncol == 1 {
 			for_each(
 				par,
 				nrow,
-				dst.par_row_chunks_mut(rh).zip_eq(lhs.par_row_chunks(rh)),
-				|(dst, lhs)| seq(dst, lhs, rhs),
+				dst.par_row_chunks_mut(rh)
+					.zip_eq(lhs.par_row_chunks(rh))
+					.zip_eq(parts),
+				|((dst, lhs), part)| seq(dst, lhs, rhs, MemStack::new(part)),
 			)
 		} else if nrow == 1 {
 			for_each(
 				par,
 				ncol,
-				dst.par_col_chunks_mut(cw).zip_eq(rhs.par_col_chunks(cw)),
-				|(dst, rhs)| seq(dst, lhs, rhs),
+				dst.par_col_chunks_mut(cw)
+					.zip_eq(rhs.par_col_chunks(cw))
+					.zip_eq(parts),
+				|((dst, rhs), part)| seq(dst, lhs, rhs, MemStack::new(part)),
 			)
 		} else {
+			let col_parts = StackParts {
+				buf: parts.buf,
+				bytes: bytes * nrow,
+				len: ncol,
+			};
 			for_each_with_par(
 				par,
 				ncol,
-				dst.par_col_chunks_mut(cw).zip_eq(rhs.par_col_chunks(cw)),
-				|(dst, rhs), par| {
+				dst.par_col_chunks_mut(cw)
+					.zip_eq(rhs.par_col_chunks(cw))
+					.zip_eq(col_parts),
+				|((dst, rhs), col_part), par| {
+					let parts = StackParts {
+						buf: col_part,
+						bytes,
+						len: nrow,
+					};
 					for_each(
 						par,
 						nrow,
 						dst.par_row_chunks_mut(rh)
-							.zip_eq(lhs.par_row_chunks(rh)),
-						|(dst, lhs)| seq(dst, lhs, rhs),
+							.zip_eq(lhs.par_row_chunks(rh))
+							.zip_eq(parts),
+						|((dst, lhs), part)| {
+							seq(dst, lhs, rhs, MemStack::new(part))
+						},
 					)
 				},
 			)
 		}
 	})
+}
+
+/// `len` consecutive parts of `bytes` bytes of a stack buffer, dealt out with the tiles of
+/// [`split_product`] (a part of no bytes when the tiles take no scratch).
+struct StackParts<'a> {
+	buf: &'a mut [core::mem::MaybeUninit<u8>],
+	bytes: usize,
+	len: usize,
+}
+
+impl<'a> Producer for StackParts<'a> {
+	type Item = &'a mut [core::mem::MaybeUninit<u8>];
+	type IntoIter = StackPartsIter<'a>;
+
+	#[inline]
+	fn len(&self) -> usize {
+		self.len
+	}
+
+	#[inline]
+	fn split_at(self, index: usize) -> (Self, Self) {
+		equator::assert!(index <= self.len);
+		let (a, b) = self.buf.split_at_mut(index * self.bytes);
+		(
+			StackParts {
+				buf: a,
+				bytes: self.bytes,
+				len: index,
+			},
+			StackParts {
+				buf: b,
+				bytes: self.bytes,
+				len: self.len - index,
+			},
+		)
+	}
+
+	#[inline]
+	fn into_items(self) -> Self::IntoIter {
+		StackPartsIter(self)
+	}
+}
+
+/// The parts of a [`StackParts`], in order.
+struct StackPartsIter<'a>(StackParts<'a>);
+
+impl<'a> Iterator for StackPartsIter<'a> {
+	type Item = &'a mut [core::mem::MaybeUninit<u8>];
+
+	#[inline]
+	fn next(&mut self) -> Option<Self::Item> {
+		if self.0.len == 0 {
+			return None;
+		}
+		let buf = core::mem::take(&mut self.0.buf);
+		let (part, rest) = buf.split_at_mut(self.0.bytes);
+		self.0.buf = rest;
+		self.0.len -= 1;
+		Some(part)
+	}
 }
 
 /// The sequential generic product: the vertical kernel for a column-major `dst` and `lhs` (or,

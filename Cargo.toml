@@ -56,3 +56,15 @@ missing_safety_doc = "deny"
 inherits = "test"
 opt-level = 2
 debug = "line-tables-only"
+
+# The `gemm_with_stack` entries of the packed kernels (#34), merged upstream but not yet released:
+# pinned by git revision, all in this table. `cargo deny` checks bans only, and the workspace is
+# not published, so a git source builds here.
+[patch.crates-io]
+# TODO(#34): move to the crates.io release of t4a-gemm that contains tensor4all/t4a-gemm#22.
+t4a-gemm = { git = "https://github.com/tensor4all/t4a-gemm", rev = "29b5b467c5f7147a9a14ae00613c7f848d0505a5" }
+# TODO(#34): as `t4a-gemm` (the same repository and revision).
+t4a-gemm-common = { git = "https://github.com/tensor4all/t4a-gemm", rev = "29b5b467c5f7147a9a14ae00613c7f848d0505a5" }
+# TODO(#34): move to the crates.io release of t4a-private-gemm-x86 that contains
+# tensor4all/t4a-private-gemm-x86#20 and #21.
+t4a-private-gemm-x86 = { git = "https://github.com/tensor4all/t4a-private-gemm-x86", rev = "d518bab95062e2003a2fc4de5481ea99bda984a2" }
