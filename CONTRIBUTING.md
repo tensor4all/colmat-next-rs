@@ -18,6 +18,9 @@ This file only records what is specific to `colmat-next-rs`:
   (clippy over all targets), in the `deny` job (#20).
 - **Platforms claimed**: `ubuntu-latest` and `macos-latest` (tests); rustdoc, clippy and `deny` run on Linux only.
 - **Local gate**: `cargo test --workspace --profile ci` once a crate exists.
+- **Coverage**: `.github/workflows/coverage.yml` reports line coverage (`cargo llvm-cov`, `ubuntu-latest`, doctests
+  not measured) weekly and on demand, and does not gate merges yet; a floor under `ci-gate` follows once the
+  baseline is stable (#37). `docs/coverage.md` has the command and the baseline.
 - **CI time budget**: the push/PR pipeline has one total budget (`CI_BUDGET_MINUTES` in `.github/workflows/ci.yml`).
   The `budget` job fails when it is exceeded and lists the slowest jobs. Tests too slow for it are named `heavy_*`,
   marked `#[ignore = "heavy: ..."]`, and run nightly from `.github/workflows/heavy-tests.yml`, which files (or
