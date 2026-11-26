@@ -39,12 +39,12 @@ jobs:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@v2
         with:
-          # The action tag moves; the tool it installs is the pinned part.
-          tool: cargo-llvm-cov@0.9.1
+          # The action tag moves; the tools it installs are the pinned part.
+          tool: cargo-llvm-cov@0.9.1,cargo-nextest@0.9.151
       - uses: Swatinem/rust-cache@v2
-      # `--test-threads=1`: with the default threads the tests of one binary contend on the shared
-      # coverage counters, and the run takes about 21 minutes instead of about 3 (#37). The table
-      # goes to the log and to the job summary, with the commit it measured.
+      # nextest runs each test in its own process, so the tests do not contend on shared coverage
+      # counters, as the threads of one `cargo test` process do (#37). The table goes to the log
+      # and to the job summary, with the commit it measured.
       - name: Line coverage
         run: |
           set -o pipefail
@@ -52,7 +52,7 @@ jobs:
             echo "Commit: \`${GITHUB_SHA}\`"
             echo
             echo '```'
-            cargo llvm-cov --workspace --all-targets --locked --profile ci --summary-only \
-              -- --test-threads=1
+            cargo llvm-cov nextest --workspace --all-targets --locked --cargo-profile ci \
+              --summary-only
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
