@@ -9,6 +9,9 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- CI (#37): `coverage.yml` measures line coverage with `cargo llvm-cov` on `ubuntu-latest`,
+  weekly and on demand, and reports it; it does not gate merges yet (`docs/coverage.md`).
+  Doctests are not measured.
 - `colmat-core` (#34): `matmul_with_scratch` takes the packing memory of the packed native
   products (`f32`, `f64`, `c32`, `c64`) from its stack as well, through the `gemm_with_stack`
   entries of `t4a-gemm` and `t4a-private-gemm-x86`, so it allocates nothing from the first call
