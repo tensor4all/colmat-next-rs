@@ -207,15 +207,15 @@ fn check_matmul<T: colmat_core::kernels::KernelField + Copy>(
 	}
 }
 
-/// The packed native products, `t4a-gemm` (and `t4a-private-gemm-x86` on x86-64). They keep
-/// their packing memory in thread-locals, so the first call on a thread allocates and a product
-/// whose pack exceeds L2 allocates on every call (tensor4all/t4a-gemm#21,
-/// tensor4all/t4a-private-gemm-x86#14). `first_call` asks for nothing to be allocated even then;
-/// otherwise each shape is warmed up once on every participant before it is counted.
+/// The packed native products, `t4a-gemm` (and `t4a-private-gemm-x86` on x86-64). They take
+/// their packing memory from the stack (#34), so nothing is allocated, from a thread's first
+/// call on (`first_call`) or after one warm-up of the shape on every participant.
 fn check_native_matmul(mut par: Par<'_>, first_call: bool) {
 	let degree = par.degree();
-	// below L2 for the pack on every host this runs on (a 130 x 90 lhs block is 94 KB)
-	let shapes = [(130usize, 70usize, 90usize), (64, 200, 64)];
+	// below L2 for the pack on every host this runs on (a 130 x 90 lhs block is 94 KB), and
+	// above it (a 700 x 500 lhs is 2.8 MB, with a pack that `t4a-gemm` used to allocate on
+	// every call)
+	let shapes = [(130usize, 70usize, 90usize), (64, 200, 64), (700, 600, 500)];
 	for (m, n, k) in shapes {
 		let a = Mat::from_fn(m, k, |i, j| (i + 3 * j) as f64);
 		let b = Mat::from_fn(k, n, |i, j| (2 * i + j) as f64);
@@ -271,16 +271,11 @@ fn on_fresh_threads(f: fn(Par<'_>)) {
 static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
-#[cfg_attr(
-	target_arch = "x86_64",
-	ignore = "t4a-private-gemm-x86 grows its packing memory per thread: tensor4all/t4a-private-gemm-x86#14"
-)]
 fn native_matmul_allocates_nothing_after_a_warm_up() {
 	on_fresh_threads(|par| check_native_matmul(par, false));
 }
 
 #[test]
-#[ignore = "the packed native kernels allocate on a thread's first call: tensor4all/t4a-gemm#21, tensor4all/t4a-private-gemm-x86#14"]
 fn native_matmul_allocates_nothing_from_the_first_call() {
 	on_fresh_threads(|par| check_native_matmul(par, true));
 }

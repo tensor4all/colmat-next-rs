@@ -40,7 +40,7 @@ std = [
 ]
 # The SME kernels of `t4a-gemm` on Apple M4 and later, behind runtime detection (#23, answer
 # (3)). The `experimental-apple-amx` kernels are not enabled.
-apple-sme = ["std", "gemm/apple-sme"]
+apple-sme = ["std", "gemm/apple-sme", "t4a-gemm-common/apple-sme"]
 # The parallel route: `Par::Team` runs its regions on a threadteam team (#20).
 threadteam = ["std", "dep:threadteam"]
 

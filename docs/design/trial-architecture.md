@@ -123,13 +123,15 @@ until recorded in meta.
   path, no heap or thread-local allocation during execution, capacity errors before outputs change.
   Solvers take scratch, so iterative refinement does not allocate per step. Until meta §11
   question 3 settles the error type, an insufficient stack panics at entry, before any output is
-  written (#20). **One exception is open (#23):** the packed native products (`t4a-gemm`, and
-  `t4a-private-gemm-x86` on x86-64) keep their packing memory in thread-locals. So
-  `matmul_with_scratch` allocates on a thread's first call, and above L2 on every call, for
-  `f32`, `f64`, `c32` and `c64`. That holds until those crates take scratch
-  (tensor4all/t4a-gemm#21, tensor4all/t4a-private-gemm-x86#14). Its rustdoc and the
-  no-allocation test state this: the test checks the native path after one warm-up, and its
-  first-call case is ignored with those links.
+  written (#20). The packed native products (`t4a-gemm`, and `t4a-private-gemm-x86` on x86-64)
+  take their packing memory from the caller's stack in `matmul_with_scratch` (#34; it was the
+  exception of #23 until their `gemm_with_stack` entries). Proposed in this trial (#34): the
+  allocating entries `matmul` and `matmul_with_conj` let the provider find its memory itself
+  (`Gemm::gemm_alloc`), which for these kernels means their thread-locals, so a small product
+  does not pay for sizing and allocating a stack on every call. On x86-64,
+  `t4a-private-gemm-x86` asks for about twice the L3 size per participant whatever the shape;
+  that request reaches only a caller of `matmul_with_scratch`, and the rustdoc of
+  `matmul_with_scratch` and `matmul_scratch` states it.
 - **Execution.** `Par::Team` wraps a threadteam token, behind `colmat-core`'s `threadteam` feature
   (meta §7a's layout puts `threadteam` under `colmat-core`). The team skeletons deal a
   `colmat-core` trait (`utils::thread::Producer`) rather than rayon's producer (debt K7), so the

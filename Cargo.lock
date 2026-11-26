@@ -721,8 +721,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm"
 version = "0.20.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f59ad637f7982e2197eb1550929b8cdaba0f7f5911af3c2a00ea242918419985"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
 dependencies = [
  "dyn-stack",
  "num-complex",
@@ -741,8 +740,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm-c32"
 version = "0.20.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a948134ee5d958a52277201643452742b8d37f608bab1604252121f3d31a081"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
 dependencies = [
  "dyn-stack",
  "num-complex",
@@ -756,8 +754,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm-c64"
 version = "0.20.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01efdf71d74a61ebdf6199abbdb458d8e2f35c27463ef2d60eabf329ffd214ca"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
 dependencies = [
  "dyn-stack",
  "num-complex",
@@ -771,8 +768,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm-common"
 version = "0.20.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51ea83be78d08fc2e0f79e8c9c59b34b2e441c212162929405dbcb53aca525ef"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -791,8 +787,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm-f16"
 version = "0.20.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d804c3cd6c64a7104fca770bbc8a6b1d51d9bba4a4c52ff489b53f6b25c9d6"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
 dependencies = [
  "dyn-stack",
  "half",
@@ -808,8 +803,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm-f32"
 version = "0.20.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "905030a831256754168b3df6d9f29638fde37f6cce6ba60b47f0437841602217"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
 dependencies = [
  "dyn-stack",
  "num-complex",
@@ -823,8 +817,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm-f64"
 version = "0.20.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff81c96e4e16a37d797d07a7926274cd24ee12a9efaab9535c65b43a8a9cd97a"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
 dependencies = [
  "dyn-stack",
  "num-complex",
@@ -837,9 +830,8 @@ dependencies = [
 
 [[package]]
 name = "t4a-private-gemm-x86"
-version = "0.1.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90295f48b59ab213a5fa840a0342d7a16cfc71bb5905070414fd105fcc0fcba7"
+version = "0.1.30"
+source = "git+https://github.com/tensor4all/t4a-private-gemm-x86?rev=d518bab95062e2003a2fc4de5481ea99bda984a2#d518bab95062e2003a2fc4de5481ea99bda984a2"
 dependencies = [
  "defer",
  "interpol",

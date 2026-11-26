@@ -388,6 +388,25 @@ fn team_result_is_bitwise_seq() {
 		});
 		assert!(ran > 0, "{m}x{n}x{k}: the team path did not run");
 		assert!(team == seq, "{m}x{n}x{k}: team result differs from Seq");
+		// the packing memory from the stack (`Gemm::gemm`) rather than from the kernels'
+		// thread-locals (`Gemm::gemm_alloc`, which `matmul` takes): the same result
+		let mut stacked = Mat::<f64>::zeros(m, n);
+		with_team(4, |par| {
+			let mut buf =
+				MemBuffer::new(matmul_scratch::<f64>(m, n, k, par.shape()));
+			matmul_with_scratch(
+				&mut stacked,
+				Accum::Replace,
+				&a,
+				Conj::No,
+				&b,
+				Conj::No,
+				1.5,
+				par,
+				MemStack::new(&mut buf),
+			);
+		});
+		assert!(stacked == seq, "{m}x{n}x{k}: stack result differs from Seq");
 	}
 }
 
