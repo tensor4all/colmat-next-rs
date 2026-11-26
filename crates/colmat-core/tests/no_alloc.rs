@@ -292,14 +292,41 @@ fn with_marked_team(width: usize, f: impl FnOnce(Par<'_>)) {
 	let team = pool.into_team(width).expect("an idle pool");
 	let mut exec = team.exec(width);
 	exec.team(|mut team| {
-		// A member allocates three times (48 bytes and less) the first time it goes idle after
-		// the pool starts it: threadteam's own one-time set-up, measured on threadteam 0.6.0,
-		// not something a call does. Let every member pass that point before counting.
+		// A member allocates the first time it goes idle after the pool starts it: on Apple
+		// targets, `std` boxes the pthread mutex and condvar of the worker's sleep lazily (64 and
+		// 48 bytes, measured with threadteam 0.6.0 and Rust 1.96.0; none on Linux). That is not
+		// something a call does. Let every member pass that point before counting.
 		team.reborrow().run(|_, _| {});
-		std::thread::sleep(std::time::Duration::from_millis(50));
+		wait_until_quiet();
 		f(Par::Team(team))
 	})
 	.expect("a team token");
+}
+
+/// Waits until the participants have allocated nothing for `QUIET` consecutive windows.
+///
+/// A fixed sleep is not enough (#41): on a loaded host a member may not be scheduled before
+/// the sleep ends, and its one-time set-up then lands inside a counted call. Several quiet
+/// windows in a row, instead of one, make it unlikely that a member which has not run yet passes
+/// for quiet. On Linux, where the set-up does not allocate, the first windows already are.
+#[cfg(feature = "threadteam")]
+fn wait_until_quiet() {
+	const WINDOW: std::time::Duration = std::time::Duration::from_millis(50);
+	const QUIET: u32 = 4;
+	let deadline =
+		std::time::Instant::now() + std::time::Duration::from_secs(30);
+	let mut quiet = 0;
+	while quiet < QUIET {
+		if allocations(|| std::thread::sleep(WINDOW)) == 0 {
+			quiet += 1;
+		} else {
+			quiet = 0;
+		}
+		assert!(
+			std::time::Instant::now() < deadline,
+			"the team kept allocating while idle for 30 s"
+		);
+	}
 }
 
 #[test]

@@ -37,6 +37,10 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- Tests (#41): the team checks of `tests/no_alloc.rs` wait until the pool members have stopped
+  allocating (four quiet 50 ms windows in a row) instead of a fixed 50 ms, so a loaded macOS host
+  no longer counts a member's one-time set-up against the call. Under twice as many spinning
+  threads as CPUs, failures went from 16 in 200 runs to 1 in 200.
 - `colmat-traits` (#26): on NEON, `NativeSimd`'s full pair loads and stores (the registers of
   `Complex<f32>`/`Complex<f64>`) are one `vld2q`/`vst2q` on memory instead of a deinterleave
   through a stack copy. The path is chosen from the register's size (16 bytes, NEON enabled at
