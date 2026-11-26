@@ -10,6 +10,8 @@ All notable changes are recorded here. The format follows
 ### Changed
 
 - CI (#37): a weekly, report-only line-coverage job (`coverage.yml`; see `CONTRIBUTING.md`).
+- CI (#37): the coverage job fixes the property tests' seed (`PROPTEST_RNG_SEED=20261120`), so
+  that its number does not move between runs of one commit (`docs/coverage.md`).
 - Dependencies (#34): `t4a-private-gemm-x86` comes from its crates.io release 0.1.30, the one
   with `gemm_with_stack`, instead of a git revision (the same commit, `d518bab`). `t4a-gemm` and
   `t4a-gemm-common` stay pinned by git revision until their release.
