@@ -45,7 +45,12 @@ jobs:
       # `--test-threads=1`: with the default threads the tests of one binary contend on the shared
       # coverage counters, and the run takes about 21 minutes instead of about 3 (#37). The table
       # goes to the log and to the job summary, with the commit it measured.
+      # `PROPTEST_RNG_SEED` (the seed of `mutants.yml`) makes the property tests draw the same
+      # inputs on every run, so the number does not move with them (#37). The `test` job of
+      # `ci.yml` and the nightly 65 536-case run still draw new inputs.
       - name: Line coverage
+        env:
+          PROPTEST_RNG_SEED: "20261120"
         run: |
           set -o pipefail
           {

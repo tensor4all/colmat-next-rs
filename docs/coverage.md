@@ -26,12 +26,21 @@ merge commit GitHub tests, not the branch head. The aarch64 row is for orientati
 will come from `ubuntu-latest`. On `ubuntu-latest` the tests take about 7 minutes on one thread
 (the whole job about 8).
 
+**A fixed seed.** The job sets `PROPTEST_RNG_SEED=20261120`, the seed of `mutants.yml`, and keeps
+`PROPTEST_CASES` at its default (#37). Without it the number moved by up to 5 lines between runs of
+one commit on `ubuntu-latest`. Locally the cause was the property tests' random inputs: one line
+(`matown.rs:579`, the early `return` of `resize_with`) was covered in 8 of 9 runs, and with the
+seed three runs gave identical results. The seed is part of the measurement, not of the tests: the
+`test` job of `ci.yml` and the nightly 65 536-case run still draw new inputs. The floor is chosen
+only after several `ubuntu-latest` runs with the seed give the same number.
+
 ## Reproduce it locally
 
 ```sh
 rustup component add llvm-tools-preview --toolchain 1.96.0   # required by cargo-llvm-cov
 cargo install cargo-llvm-cov --version 0.9.1 --locked
-cargo llvm-cov --workspace --all-targets --locked --profile ci --summary-only -- --test-threads=1
+PROPTEST_RNG_SEED=20261120 cargo llvm-cov --workspace --all-targets --locked --profile ci \
+  --summary-only -- --test-threads=1
 ```
 
 Unset a `RUSTUP_TOOLCHAIN` exported in your shell first, so that `rust-toolchain.toml` selects
