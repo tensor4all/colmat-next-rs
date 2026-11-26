@@ -831,7 +831,8 @@ dependencies = [
 [[package]]
 name = "t4a-private-gemm-x86"
 version = "0.1.30"
-source = "git+https://github.com/tensor4all/t4a-private-gemm-x86?rev=d518bab95062e2003a2fc4de5481ea99bda984a2#d518bab95062e2003a2fc4de5481ea99bda984a2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b25dab0c02ddb2068f8caaeeffda5d8399111007d16bbceef0fce215d54cb12"
 dependencies = [
  "defer",
  "interpol",
