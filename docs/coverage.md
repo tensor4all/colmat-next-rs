@@ -18,10 +18,13 @@ number in the job summary and does not gate merges (#37).
 
 | Commit | Host | Lines | Regions | Functions |
 |---|---|---:|---:|---:|
+| `34a7288` (`4cc55ae` with #38) | `ubuntu-latest`, x86-64 ([run](https://github.com/tensor4all/colmat-next-rs/actions/runs/45756603179)) | 58.96 % (8484 of 14389) | 60.22 % | 52.06 % |
 | `4cc55ae` | Apple M1 Pro, aarch64 (local, not the CI host) | 59.19 % (8445 of 14268) | 60.50 % | 52.09 % |
 
-The `ubuntu-latest` rows are added from the job's summaries. The aarch64 row is for orientation
-only: the floor will come from `ubuntu-latest`.
+The `ubuntu-latest` rows are added from the job's summaries. On a pull request the commit is the
+merge commit GitHub tests, not the branch head. The aarch64 row is for orientation only: the floor
+will come from `ubuntu-latest`. On `ubuntu-latest` the tests take about 7 minutes on one thread
+(the whole job about 8).
 
 ## Reproduce it locally
 
