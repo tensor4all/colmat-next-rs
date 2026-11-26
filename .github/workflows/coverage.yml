@@ -1,0 +1,58 @@
+name: Coverage
+
+# Line coverage (#37), reported, not a merge gate: not part of `ci-gate`, and no
+# `--fail-under-lines` yet. The floor comes later, from the baseline this job measures on
+# `ubuntu-latest`; the job then moves under `ci-gate` in `ci.yml` (#37). Doctests are not
+# measured. `docs/coverage.md` has the command and the baseline.
+
+on:
+  schedule:
+    # Sunday 20:00 UTC = Monday 05:00 JST, after the weekly Miri and mutants runs start.
+    - cron: "0 20 * * 0"
+  workflow_dispatch:
+  # A pull request that changes this workflow runs it once, so that it is checked before it
+  # reaches `main` (where `workflow_dispatch` becomes available).
+  pull_request:
+    paths:
+      - .github/workflows/coverage.yml
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    name: coverage (report)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          # The action tag moves; the tool it installs is the pinned part.
+          tool: cargo-llvm-cov@0.9.1
+      - uses: Swatinem/rust-cache@v2
+      # `--test-threads=1`: with the default threads the tests of one binary contend on the shared
+      # coverage counters, and the run takes about 21 minutes instead of about 3 (#37). The table
+      # goes to the log and to the job summary, with the commit it measured.
+      - name: Line coverage
+        run: |
+          set -o pipefail
+          {
+            echo "Commit: \`${GITHUB_SHA}\`"
+            echo
+            echo '```'
+            cargo llvm-cov --workspace --all-targets --locked --profile ci --summary-only \
+              -- --test-threads=1
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
