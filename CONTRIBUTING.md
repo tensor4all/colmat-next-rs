@@ -17,6 +17,8 @@ This file only records what is specific to `colmat-next-rs`:
   `--all-features` for clippy and rustdoc; `colmat-core` also with no features (`cargo check`) and with `std` only
   (clippy over all targets), in the `deny` job (#20).
 - **Platforms claimed**: `ubuntu-latest` and `macos-latest` (tests); rustdoc, clippy and `deny` run on Linux only.
+  `ubuntu-latest` runs per PR; macOS is validated nightly, and on demand via `workflow_dispatch`, not per PR:
+  The `schedule` trigger of `ci.yml` (and `workflow_dispatch`) adds the macOS rows; they are not run per PR, because macOS runners are costly and limited to five concurrent jobs across the organization. A failing scheduled run files an issue. The `budget` job does not apply to the scheduled run.
 - **Local gate**: `cargo test --workspace --profile ci` once a crate exists.
 - **Coverage**: `.github/workflows/coverage.yml` reports line coverage (`cargo llvm-cov`, `ubuntu-latest`, doctests
   not measured) weekly and on demand, and does not gate merges yet; a floor under `ci-gate` follows once the
