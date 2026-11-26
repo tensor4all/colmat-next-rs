@@ -9,6 +9,9 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- Dependencies (#34): `t4a-private-gemm-x86` comes from its crates.io release 0.1.30, the one
+  with `gemm_with_stack`, instead of a git revision (the same commit, `d518bab`). `t4a-gemm` and
+  `t4a-gemm-common` stay pinned by git revision until their release.
 - `colmat-core` (#34): `matmul_with_scratch` takes the packing memory of the packed native
   products (`f32`, `f64`, `c32`, `c64`) from its stack as well, through the `gemm_with_stack`
   entries of `t4a-gemm` and `t4a-private-gemm-x86`, so it allocates nothing from the first call

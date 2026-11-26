@@ -30,8 +30,9 @@ nano-gemm = { version = "0.2.2", default-features = false }
 # release without a per-call allocation of the packing flags (colmat-rs `faer/Cargo.toml`).
 gemm = { package = "t4a-gemm", version = "0.20.1", default-features = false }
 t4a-gemm-common = { version = "0.20.4", default-features = false }
-# x86-64 packed products (MIT; the tensor4all fork of `private-gemm-x86`).
-t4a-private-gemm-x86 = { version = "0.1.28", default-features = false }
+# x86-64 packed products (MIT; the tensor4all fork of `private-gemm-x86`). 0.1.30 is the release
+# with `gemm_with_stack` (tensor4all/t4a-private-gemm-x86#20 and #21, #34).
+t4a-private-gemm-x86 = { version = "0.1.30", default-features = false }
 # The only crate that starts threads (`deny.toml`); its default `parallel` feature brings rayon.
 threadteam = "0.6.0"
 
@@ -57,14 +58,11 @@ inherits = "test"
 opt-level = 2
 debug = "line-tables-only"
 
-# The `gemm_with_stack` entries of the packed kernels (#34), merged upstream but not yet released:
-# pinned by git revision, all in this table. `cargo deny` checks bans only, and the workspace is
+# The `gemm_with_stack` entry of `t4a-gemm` (#34), merged upstream but not yet released: pinned
+# by git revision, all in this table. `cargo deny` checks bans only, and the workspace is
 # not published, so a git source builds here.
 [patch.crates-io]
 # TODO(#34): move to the crates.io release of t4a-gemm that contains tensor4all/t4a-gemm#22.
 t4a-gemm = { git = "https://github.com/tensor4all/t4a-gemm", rev = "29b5b467c5f7147a9a14ae00613c7f848d0505a5" }
 # TODO(#34): as `t4a-gemm` (the same repository and revision).
 t4a-gemm-common = { git = "https://github.com/tensor4all/t4a-gemm", rev = "29b5b467c5f7147a9a14ae00613c7f848d0505a5" }
-# TODO(#34): move to the crates.io release of t4a-private-gemm-x86 that contains
-# tensor4all/t4a-private-gemm-x86#20 and #21.
-t4a-private-gemm-x86 = { git = "https://github.com/tensor4all/t4a-private-gemm-x86", rev = "d518bab95062e2003a2fc4de5481ea99bda984a2" }
