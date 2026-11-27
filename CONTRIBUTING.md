@@ -20,9 +20,9 @@ This file only records what is specific to `colmat-next-rs`:
   `ubuntu-latest` runs per PR; macOS is validated nightly, and on demand via `workflow_dispatch`, not per PR:
   The `schedule` trigger of `ci.yml` (and `workflow_dispatch`) adds the macOS rows; they are not run per PR, because macOS runners are costly and limited to five concurrent jobs across the organization. A failing scheduled run files an issue. The `budget` job does not apply to the scheduled run.
 - **Local gate**: `cargo test --workspace --profile ci` once a crate exists.
-- **Coverage**: `.github/workflows/coverage.yml` reports line coverage (`cargo llvm-cov`, `ubuntu-latest`, doctests
-  not measured) weekly and on demand, and does not gate merges yet; a floor under `ci-gate` follows once the
-  baseline is stable (#37). `docs/coverage.md` has the command and the baseline.
+- **Coverage**: `.github/workflows/coverage.yml` measures line coverage (`cargo llvm-cov`, `ubuntu-latest`, doctests
+  not measured) weekly and on demand, and fails below a floor of 58.9 % of lines (#37). It does not gate merges:
+  it is not part of `ci-gate`. `docs/coverage.md` has the command, the baseline and the floor.
 - **CI time budget**: the push/PR pipeline has one total budget (`CI_BUDGET_MINUTES` in `.github/workflows/ci.yml`).
   The `budget` job fails when it is exceeded and lists the slowest jobs. Tests too slow for it are named `heavy_*`,
   marked `#[ignore = "heavy: ..."]`, and run nightly from `.github/workflows/heavy-tests.yml`, which files (or

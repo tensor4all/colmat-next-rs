@@ -12,6 +12,9 @@ All notable changes are recorded here. The format follows
 - CI (#37): a weekly, report-only line-coverage job (`coverage.yml`; see `CONTRIBUTING.md`).
 - CI (#37): the coverage job fixes the property tests' seed (`PROPTEST_RNG_SEED=20261120`), so
   that its number does not move between runs of one commit (`docs/coverage.md`).
+- CI (#37): the coverage job fails below a floor of 58.9 % of lines (`--fail-under-lines`), set
+  below the `ubuntu-latest` baseline of 8484 or 8488 lines; it still does not gate merges, and it
+  uploads `lcov.info` also when it fails (`docs/coverage.md`).
 - CI (#37): the coverage job uploads its per-line report (`lcov.info`) as the artifact
   `lcov-<run id>-<attempt>`, kept 14 days, to find the lines that still move between runs of one
   commit on `ubuntu-latest` (`docs/coverage.md`).
