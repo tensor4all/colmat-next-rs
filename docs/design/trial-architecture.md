@@ -145,7 +145,11 @@ until recorded in meta.
   and is the same on every call of the same width, since the partition and the order of the
   addition depend on the shape and the width only. The partial sums (`nrows x width`) come from
   the caller's scratch: `matmul_scratch` asks for them when `par` is a team and the shape takes
-  the split.
+  the split. The packed native products call their kernel once per tile, so the bitwise equality
+  also needs the kernel to group the depth of every element the same way whatever the tile's
+  shape: `t4a-gemm` cut it by the output's shape until tensor4all/t4a-gemm#25, which made `f64`
+  `257 x 3 x 513` differ between `Par::Seq` and a team (#45). For `t4a-private-gemm-x86` this is
+  read from the code but not tested (tensor4all/t4a-private-gemm-x86#24).
 - **Drivers.** Factorisations call primitives and shared leaves only. Panel leaves (pivot search
   plus rank-1/2 update), layout copies and the cost queries are public items of `colmat-core` or
   `colmat`, so an alternative driver or an algorithm outside the crate can reuse them. An

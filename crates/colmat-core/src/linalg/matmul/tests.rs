@@ -427,9 +427,13 @@ fn mismatched_shapes_panic() {
 }
 
 /// On a team the product splits the output, never the depth, so every element is computed in
-/// the same order as on one thread: the result is bitwise that of `Par::Seq`, and the parallel
-/// path did run. The column-major matrix-vector product splits its depth above the size of
-/// `generic::depth_split` (`team_matvec_depth_split_*` below); the shapes here stay below it.
+/// the same order as on one thread: the result is bitwise that of `Par::Seq` at every width, and
+/// the parallel path did run. This needs the kernels' blocking of the depth not to depend on the
+/// tile's shape: `(257, 3, 513)` and `(130, 130, 1024)` cut tiles of at most `64 x 64` from a
+/// product deeper than 512, which `t4a-gemm` blocked differently from the whole product until
+/// tensor4all/t4a-gemm#25 (#45). The column-major matrix-vector product splits its depth above
+/// the size of `generic::depth_split` (`team_matvec_depth_split_*` below); the shapes here stay
+/// below it.
 #[cfg(all(feature = "threadteam", not(miri)))]
 #[test]
 fn team_result_is_bitwise_seq() {
@@ -442,42 +446,59 @@ fn team_result_is_bitwise_seq() {
 		(4096, 1, 512),
 		(1, 2048, 2048),
 		(2048, 2048, 1),
+		(257, 3, 513),
+		(130, 130, 1024),
 	] {
 		let a = Mat::<f64>::from_fn(m, k, |_, _| rng.next());
 		let b = Mat::<f64>::from_fn(k, n, |_, _| rng.next());
 		let mut seq = Mat::<f64>::zeros(m, n);
 		matmul(&mut seq, Accum::Replace, &a, &b, 1.5, Par::Seq);
-		let mut team = Mat::<f64>::zeros(m, n);
-		let ran = with_team(4, |par| {
-			stats::enable(true);
-			let _ = stats::take();
-			matmul(&mut team, Accum::Replace, &a, &b, 1.5, par);
-			stats::enable(false);
-			let s = stats::take();
-			s.run.iter().skip(2).sum::<usize>()
-				+ s.split.iter().skip(2).sum::<usize>()
-		});
-		assert!(ran > 0, "{m}x{n}x{k}: the team path did not run");
-		assert!(team == seq, "{m}x{n}x{k}: team result differs from Seq");
-		// the packing memory from the stack (`Gemm::gemm`) rather than from the kernels'
-		// thread-locals (`Gemm::gemm_alloc`, which `matmul` takes): the same result
-		let mut stacked = Mat::<f64>::zeros(m, n);
-		with_team(4, |par| {
-			let mut buf =
-				MemBuffer::new(matmul_scratch::<f64>(m, n, k, par.shape()));
-			matmul_with_scratch(
-				&mut stacked,
-				Accum::Replace,
-				&a,
-				Conj::No,
-				&b,
-				Conj::No,
-				1.5,
-				par,
-				MemStack::new(&mut buf),
+		for width in 2..=8 {
+			let mut team = Mat::<f64>::zeros(m, n);
+			let ran = with_team(width, |par| {
+				stats::enable(true);
+				let _ = stats::take();
+				matmul(&mut team, Accum::Replace, &a, &b, 1.5, par);
+				stats::enable(false);
+				let s = stats::take();
+				s.run.iter().skip(2).sum::<usize>()
+					+ s.split.iter().skip(2).sum::<usize>()
+			});
+			// The cost model keeps `256 x 3 x 256` on one thread below width 4; every other
+			// shape here, and these two at every width, take the team path.
+			if width >= 4 || k > 512 {
+				assert!(
+					ran > 0,
+					"{m}x{n}x{k} width {width}: the team path did not run"
+				);
+			}
+			assert!(
+				team == seq,
+				"{m}x{n}x{k} width {width}: team result differs from Seq"
 			);
-		});
-		assert!(stacked == seq, "{m}x{n}x{k}: stack result differs from Seq");
+			// the packing memory from the stack (`Gemm::gemm`) rather than from the kernels'
+			// thread-locals (`Gemm::gemm_alloc`, which `matmul` takes): the same result
+			let mut stacked = Mat::<f64>::zeros(m, n);
+			with_team(width, |par| {
+				let mut buf =
+					MemBuffer::new(matmul_scratch::<f64>(m, n, k, par.shape()));
+				matmul_with_scratch(
+					&mut stacked,
+					Accum::Replace,
+					&a,
+					Conj::No,
+					&b,
+					Conj::No,
+					1.5,
+					par,
+					MemStack::new(&mut buf),
+				);
+			});
+			assert!(
+				stacked == seq,
+				"{m}x{n}x{k} width {width}: stack result differs from Seq"
+			);
+		}
 	}
 }
 
