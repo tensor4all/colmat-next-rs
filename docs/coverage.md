@@ -34,6 +34,41 @@ seed three runs gave identical results. The seed is part of the measurement, not
 `test` job of `ci.yml` and the nightly 65 536-case run still draw new inputs. The floor is chosen
 only after several `ubuntu-latest` runs with the seed give the same number.
 
+**The seed is not enough on `ubuntu-latest`.** Three attempts of one run with the seed, on one
+merge commit, covered 8484, 8484 and 8488 lines
+([run](https://github.com/tensor4all/colmat-next-rs/actions/runs/45784127160); #37). The seed
+stays: it removes one known source. To find the lines that still move, the job uploads the
+per-line report as the artifact `lcov-<run id>-<attempt>` (`lcov.info`, kept 14 days). Compare
+separate runs (`gh workflow run coverage.yml`, or the weekly ones), not attempts of one run:
+on #48, re-running all jobs left only the second attempt's artifact. Download each run's file
+(`gh run download <run id>`) and compare two runs whose numbers differ line by line:
+
+```sh
+cov() { awk -F'[:,]' '/^SF:/{f=$2} /^DA:/{print f":"$2" "($3>0)}' "$1" | sort; }
+diff <(cov a/lcov.info) <(cov b/lcov.info)   # file:line, 1 if covered
+```
+
+**The lines that move: the runner's instruction set.** Two runs on #48 covered 8488 lines
+([run](https://github.com/tensor4all/colmat-next-rs/actions/runs/45946634249), attempt 2) and
+8484 lines ([run](https://github.com/tensor4all/colmat-next-rs/actions/runs/45948372777)); the
+Rust code of the two merge commits is the same. They differ in three CPU feature checks and in
+nothing else:
+
+| Lines | What they are | 8488 run | 8484 run |
+|---|---|---|---|
+| `linalg/matmul/native.rs:53` | `x86_instr`, the AVX-512F branch | no | yes |
+| `linalg/matmul/native.rs:54-55, 57` | `x86_instr`, the AVX2 and FMA branch | yes | no |
+| `utils/cost.rs:114` | `HostClass::detect_uncached`, the AVX-512F branch | no | yes |
+| `utils/cost.rs:115-116, 118` | `HostClass::detect_uncached`, the AVX2 and FMA branch | yes | no |
+| `utils/cost.rs:1066` | the test `detection_is_stable_and_the_host_row_is_its_class`, its AVX-512F `assert_eq!` | no | yes |
+| `utils/cost.rs:1067` | the same test, the line after that `if` | yes | no |
+
+So `ubuntu-latest` runners come with and without AVX-512F. An AVX2 runner covers 8488 lines and
+an AVX-512F runner 8484, 4 fewer. The lines are not pool, scheduling or timing code. The 8483 of an
+earlier unseeded run is consistent with an AVX-512F runner that also missed the property-test
+line above, which the seed fixes; that run kept no per-line report, so this is not verified.
+The choice between a floor at the lower number and excluding these checks is open (#37).
+
 ## Reproduce it locally
 
 ```sh
@@ -48,6 +83,9 @@ Unset a `RUSTUP_TOOLCHAIN` exported in your shell first, so that `rust-toolchain
 
 - Drop `--summary-only` for the per-file table, add `--show-missing-lines` for the uncovered lines,
   or use `--html` and open `target/llvm-cov/html/index.html`.
+- The job runs the tests once with `--no-report`, then writes both reports from that run:
+  `cargo llvm-cov report --profile ci --summary-only` and
+  `cargo llvm-cov report --profile ci --lcov --output-path lcov.info`.
 - Only one instrumented run can use `target/llvm-cov-target` at a time.
 
 **Why `--test-threads=1`.** With the default threads, the tests of one binary run on threads of one
