@@ -1,9 +1,9 @@
 name: Coverage
 
-# Line coverage (#37), reported, not a merge gate: not part of `ci-gate`, and no
-# `--fail-under-lines` yet. The floor comes later, from the baseline this job measures on
-# `ubuntu-latest`; the job then moves under `ci-gate` in `ci.yml` (#37). Doctests are not
-# measured. `docs/coverage.md` has the command and the baseline.
+# Line coverage (#37), not a merge gate: not part of `ci-gate`. The job fails below the floor,
+# 58.9 % of lines (`--fail-under-lines`), which is set below the `ubuntu-latest` baseline of
+# 8484 or 8488 lines, so a runner of either instruction set passes with a margin (#37).
+# Doctests are not measured. `docs/coverage.md` has the command, the baseline and the floor.
 
 on:
   schedule:
@@ -48,8 +48,10 @@ jobs:
       # `PROPTEST_RNG_SEED` (the seed of `mutants.yml`) makes the property tests draw the same
       # inputs on every run, so the number does not move with them (#37). The `test` job of
       # `ci.yml` and the nightly 65 536-case run still draw new inputs.
-      # The tests run once (`--no-report`); the summary and the per-line `lcov.info` are both
-      # reports of that one run.
+      # The tests run once (`--no-report`); the per-line `lcov.info` and the summary are both
+      # reports of that one run. `lcov.info` is written first, so that it is uploaded also when
+      # the summary fails the floor: a run below it is compared line by line, not met by lowering
+      # the floor (#37).
       - name: Line coverage
         env:
           PROPTEST_RNG_SEED: "20261120"
@@ -57,19 +59,20 @@ jobs:
           set -o pipefail
           cargo llvm-cov --workspace --all-targets --locked --profile ci --no-report \
             -- --test-threads=1
+          cargo llvm-cov report --profile ci --lcov --output-path lcov.info
           {
             echo "Commit: \`${GITHUB_SHA}\`"
             echo
             echo '```'
-            cargo llvm-cov report --profile ci --summary-only
+            cargo llvm-cov report --profile ci --summary-only --fail-under-lines 58.9
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
-          cargo llvm-cov report --profile ci --lcov --output-path lcov.info
       # The number still moved by a few lines between runs of one commit with the seed (#37).
       # Two runs whose numbers differ are compared through these files, to find the lines that
       # move, kept 14 days. Re-running all jobs left only the last attempt's artifact (#48), so
       # the runs compared are separate runs, not attempts (`docs/coverage.md`).
       - name: Upload lcov.info
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: lcov-${{ github.run_id }}-${{ github.run_attempt }}

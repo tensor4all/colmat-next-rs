@@ -3,16 +3,25 @@
 `.github/workflows/coverage.yml` measures the line coverage of the whole workspace with
 `cargo llvm-cov` on `ubuntu-latest`, weekly (Sunday 20:00 UTC) and on demand
 (`gh workflow run coverage.yml`), and on a pull request that changes the workflow. It reports the
-number in the job summary and does not gate merges (#37).
+number in the job summary and fails below a floor of 58.9 % of lines. It does not gate merges: it
+is not part of `ci-gate` (#37).
 
 ## The plan (#37)
 
-1. **Now: report only.** No `--fail-under-lines`. The job establishes the baseline on the CI host,
-   which compiles other paths than an aarch64 machine does (below).
-2. **Then: a gate.** Once the baseline is stable, the job moves under `ci-gate` in `ci.yml` with the
-   floor set at the measured CI value. Raising the floor is free; lowering it needs a maintainer's
-   decision stated in the pull request, and changing the toolchain or the `cargo-llvm-cov` pin means
-   re-measuring it in the same pull request.
+1. **Done: report only.** The job established the baseline on the CI host, which compiles other
+   paths than an aarch64 machine does (below): 8484 or 8488 lines, by the runner's instruction set.
+2. **Now: a floor in this job.** `--fail-under-lines 58.9`, set by the maintainer in #37 after
+   three separate runs with the seed: 8476 of 14389 lines is the lowest count that passes (8475 is
+   58.899 %). It sits 8 lines below the lower baseline (8484, an AVX-512F runner), so a line that a
+   runner happens to miss does not fail the job for a reason unrelated to the change. If a month of runs never goes below 8484, the floor
+   rises to 58.95 % (8483 lines) in a separate change. A run below 8483 is a real signal: its
+   `lcov.info` is compared with a passing run's and the diff goes to #37, rather than the floor
+   going down. Raising the floor is free; lowering it needs a maintainer's decision stated in the
+   pull request, and changing the toolchain or the `cargo-llvm-cov` pin means re-measuring it in
+   the same pull request.
+3. **Not decided: a merge gate.** Moving the job under `ci-gate` in `ci.yml` would run it on every
+   pull request (6-8 minutes on `ubuntu-latest`, against a 15-minute budget for the whole
+   pipeline). That is a separate decision (#37).
 
 ## The baseline
 
@@ -31,8 +40,8 @@ will come from `ubuntu-latest`. On `ubuntu-latest` the tests take about 7 minute
 one commit on `ubuntu-latest`. Locally the cause was the property tests' random inputs: one line
 (`matown.rs:579`, the early `return` of `resize_with`) was covered in 8 of 9 runs, and with the
 seed three runs gave identical results. The seed is part of the measurement, not of the tests: the
-`test` job of `ci.yml` and the nightly 65 536-case run still draw new inputs. The floor is chosen
-only after several `ubuntu-latest` runs with the seed give the same number.
+`test` job of `ci.yml` and the nightly 65 536-case run still draw new inputs. The floor was set
+only after several `ubuntu-latest` runs with the seed gave one of two numbers (below).
 
 **The seed is not enough on `ubuntu-latest`.** Three attempts of one run with the seed, on one
 merge commit, covered 8484, 8484 and 8488 lines
@@ -67,7 +76,18 @@ So `ubuntu-latest` runners come with and without AVX-512F. An AVX2 runner covers
 an AVX-512F runner 8484, 4 fewer. The lines are not pool, scheduling or timing code. The 8483 of an
 earlier unseeded run is consistent with an AVX-512F runner that also missed the property-test
 line above, which the seed fixes; that run kept no per-line report, so this is not verified.
-The choice between a floor at the lower number and excluding these checks is open (#37).
+Three further separate runs on `main` `ad2f3a3`
+([1](https://github.com/tensor4all/colmat-next-rs/actions/runs/45952923049),
+[2](https://github.com/tensor4all/colmat-next-rs/actions/runs/45953801850),
+[3](https://github.com/tensor4all/colmat-next-rs/actions/runs/45954446121)) covered 8484, 8488 and
+8484 lines, on AVX-512F, AVX2 and AVX-512F runners. The floor is set below the lower number (#37):
+excluding the checks from the measurement would need a file split or a nightly-only attribute for
+four lines, and would hide that the pool has two runner classes, which this table records.
+
+The numbers here are the job summary's, the same as the sums of the `LF:`/`LH:` records of
+`lcov.info` (14389 lines). Counting its `DA:` records instead gives 8243 or 8247 of 14041: in 29
+files `LF:` is a few lines more than the file's `DA:` records, for a reason not looked into.
+`--fail-under-lines` uses the summary's count, so compare runs by that count.
 
 ## Reproduce it locally
 
@@ -84,8 +104,9 @@ Unset a `RUSTUP_TOOLCHAIN` exported in your shell first, so that `rust-toolchain
 - Drop `--summary-only` for the per-file table, add `--show-missing-lines` for the uncovered lines,
   or use `--html` and open `target/llvm-cov/html/index.html`.
 - The job runs the tests once with `--no-report`, then writes both reports from that run:
-  `cargo llvm-cov report --profile ci --summary-only` and
-  `cargo llvm-cov report --profile ci --lcov --output-path lcov.info`.
+  `cargo llvm-cov report --profile ci --lcov --output-path lcov.info` and
+  `cargo llvm-cov report --profile ci --summary-only --fail-under-lines 58.9`. The floor is for
+  `ubuntu-latest`; an aarch64 machine compiles other paths and gives another number.
 - Only one instrumented run can use `target/llvm-cov-target` at a time.
 
 **Why `--test-threads=1`.** With the default threads, the tests of one binary run on threads of one
