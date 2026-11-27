@@ -45,6 +45,10 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- Tests (#37): the matrix-product tests also run the four native types through
+  `generic::gemm_generic`, the product of a scalar that names `GenericKernels`, against the
+  reference, and check that its team result is bitwise `Par::Seq`. Before, it ran only under
+  Miri. Depth 0 is left out: the driver handles it and never passes it to a hook.
 - Tests (#41): the team checks of `tests/no_alloc.rs` wait until the pool members have stopped
   allocating (four quiet 50 ms windows in a row) instead of a fixed 50 ms, so a loaded macOS host
   no longer counts a member's one-time set-up against the call. Under twice as many spinning
