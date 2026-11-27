@@ -67,7 +67,8 @@ jobs:
           cargo llvm-cov report --profile ci --lcov --output-path lcov.info
       # The number still moved by a few lines between runs of one commit with the seed (#37).
       # Two runs whose numbers differ are compared through these files, to find the lines that
-      # move. One artifact per attempt, kept 14 days.
+      # move, kept 14 days. Re-running all jobs left only the last attempt's artifact (#48), so
+      # the runs compared are separate runs, not attempts (`docs/coverage.md`).
       - name: Upload lcov.info
         uses: actions/upload-artifact@v4
         with:
