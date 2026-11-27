@@ -48,9 +48,26 @@ cov() { awk -F'[:,]' '/^SF:/{f=$2} /^DA:/{print f":"$2" "($3>0)}' "$1" | sort; }
 diff <(cov a/lcov.info) <(cov b/lcov.info)   # file:line, 1 if covered
 ```
 
-The lines found, and whether they are pool, scheduling or timing code, are recorded here; the
-choice between a floor a few lines below the measurement and excluding those lines waits for
-them (#37).
+**The lines that move: the runner's instruction set.** Two runs on #48 covered 8488 lines
+([run](https://github.com/tensor4all/colmat-next-rs/actions/runs/45946634249), attempt 2) and
+8484 lines ([run](https://github.com/tensor4all/colmat-next-rs/actions/runs/45948372777)); the
+Rust code of the two merge commits is the same. They differ in three CPU feature checks and in
+nothing else:
+
+| Lines | What they are | 8488 run | 8484 run |
+|---|---|---|---|
+| `linalg/matmul/native.rs:53` | `x86_instr`, the AVX-512F branch | no | yes |
+| `linalg/matmul/native.rs:54-55, 57` | `x86_instr`, the AVX2 and FMA branch | yes | no |
+| `utils/cost.rs:114` | `HostClass::detect_uncached`, the AVX-512F branch | no | yes |
+| `utils/cost.rs:115-116, 118` | `HostClass::detect_uncached`, the AVX2 and FMA branch | yes | no |
+| `utils/cost.rs:1066` | the test `detection_is_stable_and_the_host_row_is_its_class`, its AVX-512F `assert_eq!` | no | yes |
+| `utils/cost.rs:1067` | the same test, the line after that `if` | yes | no |
+
+So `ubuntu-latest` runners come with and without AVX-512F. An AVX2 runner covers 8488 lines and
+an AVX-512F runner 8484, 4 fewer. The lines are not pool, scheduling or timing code. The 8483 of an
+earlier unseeded run is consistent with an AVX-512F runner that also missed the property-test
+line above, which the seed fixes; that run kept no per-line report, so this is not verified.
+The choice between a floor at the lower number and excluding these checks is open (#37).
 
 ## Reproduce it locally
 
