@@ -48,16 +48,30 @@ jobs:
       # `PROPTEST_RNG_SEED` (the seed of `mutants.yml`) makes the property tests draw the same
       # inputs on every run, so the number does not move with them (#37). The `test` job of
       # `ci.yml` and the nightly 65 536-case run still draw new inputs.
+      # The tests run once (`--no-report`); the summary and the per-line `lcov.info` are both
+      # reports of that one run.
       - name: Line coverage
         env:
           PROPTEST_RNG_SEED: "20261120"
         run: |
           set -o pipefail
+          cargo llvm-cov --workspace --all-targets --locked --profile ci --no-report \
+            -- --test-threads=1
           {
             echo "Commit: \`${GITHUB_SHA}\`"
             echo
             echo '```'
-            cargo llvm-cov --workspace --all-targets --locked --profile ci --summary-only \
-              -- --test-threads=1
+            cargo llvm-cov report --profile ci --summary-only
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
+          cargo llvm-cov report --profile ci --lcov --output-path lcov.info
+      # The number still moved by a few lines between runs of one commit with the seed (#37).
+      # Two runs whose numbers differ are compared through these files, to find the lines that
+      # move. One artifact per attempt, kept 14 days.
+      - name: Upload lcov.info
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov-${{ github.run_id }}-${{ github.run_attempt }}
+          path: lcov.info
+          retention-days: 14
+          if-no-files-found: error

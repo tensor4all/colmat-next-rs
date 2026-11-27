@@ -34,6 +34,22 @@ seed three runs gave identical results. The seed is part of the measurement, not
 `test` job of `ci.yml` and the nightly 65 536-case run still draw new inputs. The floor is chosen
 only after several `ubuntu-latest` runs with the seed give the same number.
 
+**The seed is not enough on `ubuntu-latest`.** Three attempts of one run with the seed, on one
+merge commit, covered 8484, 8484 and 8488 lines
+([run](https://github.com/tensor4all/colmat-next-rs/actions/runs/45784127160); #37). The seed
+stays: it removes one known source. To find the lines that still move, the job uploads the
+per-line report of each attempt as the artifact `lcov-<run id>-<attempt>` (`lcov.info`, kept
+14 days). Two attempts whose numbers differ are compared line by line:
+
+```sh
+cov() { awk -F'[:,]' '/^SF:/{f=$2} /^DA:/{print f":"$2" "($3>0)}' "$1" | sort; }
+diff <(cov a/lcov.info) <(cov b/lcov.info)   # file:line, 1 if covered
+```
+
+The lines found, and whether they are pool, scheduling or timing code, are recorded here; the
+choice between a floor a few lines below the measurement and excluding those lines waits for
+them (#37).
+
 ## Reproduce it locally
 
 ```sh
@@ -48,6 +64,9 @@ Unset a `RUSTUP_TOOLCHAIN` exported in your shell first, so that `rust-toolchain
 
 - Drop `--summary-only` for the per-file table, add `--show-missing-lines` for the uncovered lines,
   or use `--html` and open `target/llvm-cov/html/index.html`.
+- The job runs the tests once with `--no-report`, then writes both reports from that run:
+  `cargo llvm-cov report --profile ci --summary-only` and
+  `cargo llvm-cov report --profile ci --lcov --output-path lcov.info`.
 - Only one instrumented run can use `target/llvm-cov-target` at a time.
 
 **Why `--test-threads=1`.** With the default threads, the tests of one binary run on threads of one
