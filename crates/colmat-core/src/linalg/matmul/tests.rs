@@ -126,11 +126,23 @@ fn reference<T: TestScalar>(
 	(out, bound)
 }
 
+/// Which kernels compute the product: the scalar's own (`matmul_with_scratch`, through
+/// [`KernelField::Kernels`]), or [`generic::gemm_generic`] called directly. The tests' scalars
+/// all name `NativeKernels`, so without the second the generic packed product, the one a
+/// scalar naming `GenericKernels` takes, runs only under Miri, where the native types fall back
+/// to it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Kernel {
+	Own,
+	Generic,
+}
+
 /// Runs `dst ← [dst +] alpha * op(lhs) * op(rhs)` on strided buffers of the given layouts and
 /// checks every element against the reference, the padding of all three buffers, and, for
 /// `Replace`, that `dst` was not read (it starts as NaN).
 #[allow(clippy::too_many_arguments)]
 fn check<T: TestScalar>(
+	kernel: Kernel,
 	rng: &mut Rng,
 	(m, n, k): (usize, usize, usize),
 	(ld, ll, lr): ((isize, isize), (isize, isize), (isize, isize)),
@@ -156,21 +168,35 @@ fn check<T: TestScalar>(
 	let lhs = Strided::new(m, k, ll, pad, |i, p| lhs_vals[i + m * p]);
 	let rhs = Strided::new(k, n, lr, pad, |p, j| rhs_vals[p + k * j]);
 	let mut dst = Strided::new(m, n, ld, pad, |i, j| dst_vals[i + m * j]);
-	let mut stack_buf =
-		MemBuffer::new(matmul_scratch::<T>(m, n, k, par.shape()));
-	matmul_with_scratch(
-		dst.view_mut(),
-		accum,
-		lhs.view(),
-		conj_lhs,
-		rhs.view(),
-		conj_rhs,
-		alpha,
-		par,
-		MemStack::new(&mut stack_buf),
-	);
+	match kernel {
+		Kernel::Own => {
+			let mut stack_buf =
+				MemBuffer::new(matmul_scratch::<T>(m, n, k, par.shape()));
+			matmul_with_scratch(
+				dst.view_mut(),
+				accum,
+				lhs.view(),
+				conj_lhs,
+				rhs.view(),
+				conj_rhs,
+				alpha,
+				par,
+				MemStack::new(&mut stack_buf),
+			);
+		},
+		Kernel::Generic => generic::gemm_generic(
+			dst.view_mut(),
+			accum,
+			lhs.view(),
+			conj_lhs,
+			rhs.view(),
+			conj_rhs,
+			&alpha,
+			par,
+		),
+	}
 	let ctx = format!(
-		"{} {m}x{n}x{k} {ld:?} {ll:?} {lr:?} {accum:?} {conj_lhs:?} {conj_rhs:?}",
+		"{kernel:?} {} {m}x{n}x{k} {ld:?} {ll:?} {lr:?} {accum:?} {conj_lhs:?} {conj_rhs:?}",
 		core::any::type_name::<T>()
 	);
 	for j in 0..n {
@@ -219,12 +245,14 @@ fn shapes() -> Vec<(usize, usize, usize)> {
 	s
 }
 
-/// Every layout of `dst`, `lhs` and `rhs` (one in three triples), each conjugation and both
-/// accumulation modes. Under Miri, which runs these about a thousand times slower, each layout
+/// Every layout of `dst`, `lhs` and `rhs` (one in three triples; one in nine for
+/// [`Kernel::Generic`], which reaches the same lines and is run only for them), each conjugation
+/// and both accumulation modes. Under Miri, which runs these about a thousand times slower, each layout
 /// of each operand appears once (16 triples per shape) with one of the eight modes, so the
 /// unsafe loads and stores of every layout are still checked within the scheduled Miri jobs' limit (#21).
-fn exhaustive<T: TestScalar>() {
+fn exhaustive<T: TestScalar>(kernel: Kernel) {
 	let mut rng = Rng(0x5eed);
+	let every = if kernel == Kernel::Generic { 9 } else { 3 };
 	let modes = |t: usize| {
 		let accum = if t & 1 == 0 {
 			Accum::Replace
@@ -235,6 +263,11 @@ fn exhaustive<T: TestScalar>() {
 		(accum, conj((t >> 1) & 1), conj((t >> 2) & 1))
 	};
 	for (m, n, k) in shapes() {
+		// The driver handles depth 0 itself and never passes it to a hook (`kernels`), and
+		// `gemm_generic` leaves `dst` as it was there.
+		if kernel == Kernel::Generic && k == 0 {
+			continue;
+		}
 		let (ds, ls, rs) = (layouts(m, n), layouts(m, k), layouts(k, n));
 		if cfg!(miri) {
 			for t in 0..ds.len() {
@@ -242,6 +275,7 @@ fn exhaustive<T: TestScalar>() {
 				let lay =
 					(ds[t], ls[(5 * t) % ls.len()], rs[(11 * t) % rs.len()]);
 				check::<T>(
+					kernel,
 					&mut rng,
 					(m, n, k),
 					lay,
@@ -258,12 +292,13 @@ fn exhaustive<T: TestScalar>() {
 			for ll in &ls {
 				for lr in &rs {
 					idx += 1;
-					if !idx.is_multiple_of(3) {
+					if !idx.is_multiple_of(every) {
 						continue;
 					}
 					for t in 0..8 {
 						let (accum, conj_lhs, conj_rhs) = modes(t);
 						check::<T>(
+							kernel,
 							&mut rng,
 							(m, n, k),
 							(*ld, *ll, *lr),
@@ -281,7 +316,7 @@ fn exhaustive<T: TestScalar>() {
 
 #[test]
 fn matmul_matches_the_reference_f64() {
-	exhaustive::<f64>();
+	exhaustive::<f64>(Kernel::Own);
 }
 #[test]
 // The same kernels as `f64`/`c64` at another lane count, which `utils::simd`'s walk test covers
@@ -291,11 +326,11 @@ fn matmul_matches_the_reference_f64() {
 	ignore = "covered by the f64/c64 cases and the simd walk test under Miri"
 )]
 fn matmul_matches_the_reference_f32() {
-	exhaustive::<f32>();
+	exhaustive::<f32>(Kernel::Own);
 }
 #[test]
 fn matmul_matches_the_reference_c64() {
-	exhaustive::<c64>();
+	exhaustive::<c64>(Kernel::Own);
 }
 #[test]
 // The same kernels as `f64`/`c64` at another lane count, which `utils::simd`'s walk test covers
@@ -305,7 +340,43 @@ fn matmul_matches_the_reference_c64() {
 	ignore = "covered by the f64/c64 cases and the simd walk test under Miri"
 )]
 fn matmul_matches_the_reference_c32() {
-	exhaustive::<c32>();
+	exhaustive::<c32>(Kernel::Own);
+}
+
+// The generic kernels on the native types, whose SIMD registers they then use: the product of
+// a scalar that names `GenericKernels`. Under Miri the native types already take these kernels
+// (the tests above), so they are skipped there.
+#[test]
+#[cfg_attr(
+	miri,
+	ignore = "the native tests above take these kernels under Miri"
+)]
+fn generic_matmul_matches_the_reference_f64() {
+	exhaustive::<f64>(Kernel::Generic);
+}
+#[test]
+#[cfg_attr(
+	miri,
+	ignore = "the native tests above take these kernels under Miri"
+)]
+fn generic_matmul_matches_the_reference_f32() {
+	exhaustive::<f32>(Kernel::Generic);
+}
+#[test]
+#[cfg_attr(
+	miri,
+	ignore = "the native tests above take these kernels under Miri"
+)]
+fn generic_matmul_matches_the_reference_c64() {
+	exhaustive::<c64>(Kernel::Generic);
+}
+#[test]
+#[cfg_attr(
+	miri,
+	ignore = "the native tests above take these kernels under Miri"
+)]
+fn generic_matmul_matches_the_reference_c32() {
+	exhaustive::<c32>(Kernel::Generic);
 }
 
 /// The convenience entries agree with [`matmul_with_scratch`], and `matmul` reads the
@@ -407,6 +478,53 @@ fn team_result_is_bitwise_seq() {
 			);
 		});
 		assert!(stacked == seq, "{m}x{n}x{k}: stack result differs from Seq");
+	}
+}
+
+/// [`generic::gemm_generic`] on a team splits the output as the native product does, so its
+/// result is bitwise that of `Par::Seq` as well, and the parallel path did run.
+#[cfg(all(feature = "threadteam", not(miri)))]
+#[test]
+fn generic_team_result_is_bitwise_seq() {
+	use crate::utils::team::{stats, with_team};
+	let mut rng = Rng(13);
+	// both splits of the grid, a depth past one block, and tiles that are not whole micro-kernels
+	for &(m, n, k) in
+		&[(192usize, 160usize, 96usize), (300, 7, 70), (5, 260, 33)]
+	{
+		let a =
+			Mat::<c64>::from_fn(m, k, |_, _| c64::new(rng.next(), rng.next()));
+		let b =
+			Mat::<c64>::from_fn(k, n, |_, _| c64::new(rng.next(), rng.next()));
+		let d =
+			Mat::<c64>::from_fn(m, n, |_, _| c64::new(rng.next(), rng.next()));
+		let alpha = c64::new(0.75, -1.25);
+		let run = |dst: &mut Mat<c64>, par: Par| {
+			generic::gemm_generic(
+				dst.as_mut(),
+				Accum::Add,
+				a.as_ref(),
+				Conj::Yes,
+				b.as_ref(),
+				Conj::No,
+				&alpha,
+				par,
+			)
+		};
+		let mut seq = d.clone();
+		run(&mut seq, Par::Seq);
+		let mut team = d.clone();
+		let ran = with_team(4, |par| {
+			stats::enable(true);
+			let _ = stats::take();
+			run(&mut team, par);
+			stats::enable(false);
+			let s = stats::take();
+			s.run.iter().skip(2).sum::<usize>()
+				+ s.split.iter().skip(2).sum::<usize>()
+		});
+		assert!(ran > 0, "{m}x{n}x{k}: the team path did not run");
+		assert!(team == seq, "{m}x{n}x{k}: team result differs from Seq");
 	}
 }
 
