@@ -25,7 +25,7 @@ colmat-rs, it cites the commit or the work log.
 | `t4a-gemm` already chooses its kernel once per process. `init_gemm_fn` stores a function pointer in an `AtomicPtr`, and `get_gemm_fn` reads it on later calls (`t4a-gemm-common` 0.20.4, `gemm.rs` around line 1291). The `t4a-private-gemm-x86` kernel tables (`F64_SIMD512x4`, ...) are arrays of kernels. | Below the primitive, kernels are already reached through function pointers resolved at run time. The open question is only the layer above them. |
 | The SME route needed an lldb hit-count script to find out which kernel ran (work log `2026-11-22-sme-route-180`). The `x86-v4` isolation needed a patched `pulp` that skips V4 when an environment variable is set (`2026-11-26-x86-v4-isolation-297`). Build features cannot separate the arms, because Cargo unifies them. | Selection must be **observable**: which kernel ran should be readable without a debugger. It must also be **overridable at run time** for experiments. Neither is possible while the choice is buried inside each dependency. |
 | A small product on a team was 0.48x AOCL because of the kernel's own job grid, and was fixed by tiling the output above the kernel with an 8 ms serial-work ceiling (`2026-11-21-gemm-team-tile-split`, colmat-rs#262). The ceiling is set by a cache-aliasing cliff at `512^3`, not by a smooth crossover. | The choice includes the schedule (tile grid or the kernel's own grid) as well as the kernel. Thresholds can be cliffs, so they must come from measurements, not from a fitted formula. |
-| The SME gate inside `t4a-gemm` sees the shape of each sequential call. On a team that tiles the product, that shape is the tile, not the whole product (`2026-11-22-sme-route-180`, "The gate sees the shape of each sequential call"). | **Hypothesis, not tested:** on an SME host, `Par::Seq` and a team can reach different kernels for the same product. That breaks this repository's rule that a team result is bitwise equal to `Par::Seq` (§5, "Rounding on a team"). It is the same class of defect as the `kc` difference fixed through #45 and t4a-gemm#25. A kernel choice made once on the whole call and passed down to the tiles removes the defect by construction. |
+| The SME gate inside `t4a-gemm` sees the shape of each sequential call. On a team that tiles the product, that shape is the tile, not the whole product (`2026-11-22-sme-route-180`, "The gate sees the shape of each sequential call"). | **Confirmed at the dispatch level** (2026-11-28, on an M2, by calling `split_tiles`, `par_width_time` on real teams of 2–8 and `sme_thresholds::wants_sme` at the pinned `t4a-gemm` `29b5b46`; no SME hardware): a team reaches a different kernel than `Par::Seq` in 1,405 of 3,753 tiled f64 cases and 1,510 of 3,351 tiled f32 cases (m, n in 16–512, k in 64–512). 110 f64 and 91 f32 cases mix SME and NEON tiles in one product. Example: f64 `16x128x128` is SME as one call, but its two `16x64` tiles are NEON (`m*n` below 2048). Whether the rounding differs needs an M4 or later. Choosing on the tile is right for speed, since NEON does win on small calls, so this record weakens the rounding rule instead of overriding the gate (§5.3, §5.5). |
 | `x86-v4` as a build feature cost a whole campaign to answer one yes/no question, and the answer was "no gain on average, a gain for some families and sizes" (#44). | Selection is per (primitive, dtype, size, width) at run time. It is not per build. |
 
 ## 3. Decision: two levels of dispatch (proposed)
@@ -107,14 +107,19 @@ its own, or a plan that it got from `plan`.
 execution agree on the path", made structural. The workspace query of a driver is the sum of the
 `scratch` of the plans it will run.
 
-### 5.3 Selection is made on the whole call, never on a tile
+### 5.3 Tiles may choose their own kernel; the plan records it
 
-A schedule that cuts the call into tiles or depth blocks gives every piece the **same kernel and
-the same depth blocking**. The rounding of an element then does not depend on the tile it fell
-in. This generalises the `kc` fix of #45 and t4a-gemm#25. It also closes the SME hypothesis of §2,
-which a test should confirm on an M4 or M5 before the plan lands (§10). The one documented
-exception stays explicit in the plan: the column-major matrix-vector depth split (§5 of the trial
-design, #28).
+**Speed comes first (maintainer's decision, 2026-11-28).** A schedule that cuts the call into
+tiles lets each tile take the kernel that is fastest for the tile's shape. On SME hosts, small
+tiles therefore go to NEON even when the whole call would go to SME (§2). The plan computes the
+tile grid and the kernel of each tile shape (a grid has at most four tile shapes), so the choice
+is still made once per call, is visible in the trace, and is a deterministic function of the
+call and the width. A tile does not need to pass the backend's gate again, but it may when the
+backend offers no entry that takes a chosen kernel.
+
+This replaces the earlier rule that a team result is bitwise equal to `Par::Seq` (trial design
+§5, "Rounding on a team"; #28). The `kc` fix of #45 and t4a-gemm#25 is kept. It removes one
+source of variation between widths at no cost, but the contract no longer depends on it.
 
 ### 5.4 Validate before the kernel
 
@@ -126,9 +131,19 @@ the plan depends on.
 
 ### 5.5 Numerical equivalence
 
-- Same plan → bitwise the same result, at every team width the plan allows (§5.3).
-- Different plans (another host, another width that changes the kernel, an override) may round
-  differently, within the error bound documented for the primitive.
+- **Guaranteed: run-to-run reproducibility.** The same binary on the same host class, with the
+  same call (shape, layout, flags) and the same team width, gives a bitwise identical result on
+  every call. The plan is a deterministic function of exactly these inputs, and no schedule
+  depends on timing (no dynamic work stealing, no reduction in completion order).
+- **Not guaranteed: equality across widths.** `Par::Seq` and a team, or two team widths, may
+  round differently, within the error bound documented for the primitive. Today this happens
+  when a tile takes another kernel (§5.3) or when the column-major matrix-vector product splits
+  its depth (#28).
+- A caller that needs bitwise reproducibility, such as sphaira-rs for a fixed rank count, must
+  therefore also fix the team width of each rank. A width fixed by the caller is honoured
+  exactly: the cost model may narrow a region only as a function of the call and the width it
+  was given, so the result is still a function of the inputs above.
+- Different hosts, and overrides (§5.6), may round differently within the same bound.
 - Tie-breaking that a driver depends on (pivot search) is part of the primitive's contract and is
   identical across all kernels of the table. colmat-rs#105 (lane-order ties) is the defect this
   rule prevents.
@@ -181,7 +196,8 @@ at the boundary.
 - On a team and below the tile ceiling (8 ms of serial work in colmat-rs): a balanced output tile
   grid, with the kernel and `kc` chosen for the whole call.
 - Above the ceiling: the kernel's own grid, which packs the shared panels once.
-- On SME hosts: the SME or NEON choice is made once for the whole call (§5.3).
+- On SME hosts: each tile shape gets SME or NEON by the backend's size gate, and the plan
+  records which (§5.3).
 
 Exact-size caller scratch is `scratch(&plan)`. On x86-64 that removes the "twice L3 whatever the
 shape" request of `t4a-private-gemm-x86` as soon as its plan can carry a shape-sized buffer. That
@@ -255,7 +271,8 @@ not copied, because it encodes the limits of the old blocking (#44, first commen
   cannot be compared in one process.
 - **Leaving selection inside each backend crate** (today: `t4a-gemm`'s `AtomicPtr`,
   `t4a-private-gemm-x86`'s probes, the ladder in `native.rs`). Rejected: three probes, no single
-  record of what ran, and the per-tile SME choice of §2.
+  record of what ran, and a per-tile SME choice that nothing outside `t4a-gemm` can see or
+  predict (§2).
 - **Choosing per call without a plan object** (a lookup at the start of `gemm`, as today).
   Rejected: scratch query and execution would compute the choice separately and can drift, and
   sub-calls cannot inherit the choice.
@@ -270,14 +287,20 @@ Open:
   is a question for #2 and meta §11 question 1.
 - Host-class granularity: whether the L2/L3 size class belongs in the key or only scales the
   blocking. This needs the holdout data.
-- Whether `t4a-gemm` and `t4a-private-gemm-x86` expose entries that take a chosen kernel and `kc`
-  without re-running their own gates. §5.3 needs that for SME. Proposing those entries is a change
-  in those crates.
+- Whether `t4a-gemm` and `t4a-private-gemm-x86` should expose entries that take a chosen kernel
+  without re-running their own gates. §5.3 no longer requires them. They would let the plan
+  decide instead of copying the backend's gate, so the two cannot drift. Proposing those entries
+  is a change in those crates.
+- Whether an opt-in "same result at every width" mode is worth offering later (one kernel and one
+  `kc` per call, no depth split), for callers that cannot fix their width. No consumer has asked
+  for it.
 
 First steps, each its own issue and PR:
 
-1. A test on an SME host (M4 or M5): a team result of f32/f64 at shapes around the SME
-   thresholds compared bitwise with `Par::Seq`. This confirms or refutes the hypothesis of §2.
+1. Apply the weakened contract to the code: the rustdoc of `matmul_with_scratch` ("Rounding on a
+   team"), and the test `team_result_is_bitwise_seq`. Split that test into a same-width repeat
+   (bitwise) and a cross-width comparison (within the error bound). Run it once on an M4 or
+   later, where the cross-width part exercises mixed SME and NEON tiles.
 2. Probe the host once: one `HostInfo` in `colmat-core`, read by `native.rs` and by the cost
    model. Nothing else changes.
 3. Turn `Gemm<T>` into a plan, scratch and run triple, with `trace-plans`. No new kernels or
