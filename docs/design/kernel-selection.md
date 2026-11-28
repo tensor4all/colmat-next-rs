@@ -2,7 +2,8 @@
 
 **Status: proposed in this trial (2026-11-28).** This is a design for review in #44, #45 and #46.
 §11 (the backend boundary, #60) records decisions the maintainer took on 2026-11-28 and revises
-level 1 of §3.
+level 1 of §3. §12 lists what a port must carry over from colmat-rs; §11.8 was corrected
+by that audit.
 It is not a decision of the colmat maintainers. It does not change any code. Where it relies on
 colmat-rs, it cites the commit or the work log.
 
@@ -448,9 +449,22 @@ cache, both halves are limited by memory traffic:
 | separate `her2`, then `hemv` | one read and one write, then one more read |
 
 So splitting the kernel costs about 1.3–1.5 times in that phase for large `n`. This is an
-estimate from the traffic count, not a measurement. Inside cache the difference is small. The
-same structure is in `bidiag_fused_op` (`svd/bidiag.rs`) and `hessenberg_fused_op`
-(`evd/hessenberg.rs`).
+estimate from the traffic count, not a measurement. Inside cache the difference is small.
+
+**Corrected 2026-11-28 (§12 audit).** The first version of this section said that the
+bidiagonal and Hessenberg reductions are fused one-step reductions throughout. They are not.
+At `45a5be2` the fused step covers only their small sizes:
+
+| reduction | fused one-step kernel | blocked route |
+|---|---|---|
+| tridiagonal (`evd/tridiag.rs`) | `tridiag_fused_op`, every size | none |
+| bidiagonal (`svd/bidiag.rs`) | `bidiag_fused_op`, `min(m, n) ≤ BLOCK_FLOOR` (128), and the tail of the blocked loop | `bidiag_blocked_phase`: `dlabrd`-style panels of `BLOCK_SIZE` (16) with X/Y corrections, panel rows stored transposed and contiguous, one trailing product of width `2·ib`, the factor upgrade skipped for values only |
+| Hessenberg (`evd/hessenberg.rs`) | `hessenberg_fused_op` inside `hessenberg_rearranged_unblocked`, `n² < blocking_threshold` (`256²`) | `hessenberg_gqvdg_blocked` |
+
+The SVD gains of October and November are in the blocked bidiagonal phase: bidiagonalisation
+512, 8 threads, 35.2 → 19.5 ms (`docs/worklogs/2026-10-23-blocked-bidiag.md`), and `svd_values`
+f64 511 at 0.884/0.774/0.809 of the previous main at 1/4/8 threads
+(`2026-11-14-svd-mkl-targets.md`). A port must keep both routes.
 
 Decision:
 
@@ -459,8 +473,13 @@ Decision:
   This is §5.7 ("fused sweeps are primitives of their own") applied to the reductions.
 - `hemv`/`symv` and `her2`/`syr2` stay in the backend as separate level-2 primitives for their other
   callers. The reductions call the fused primitive, not the pair.
-- The blocked LAPACK variant (`latrd`, then `her2k`) is a later candidate, compared with the fused
-  step by the harness. Which one wins should depend on `n` and the cache sizes.
+- **The blocked routes are drivers in `colmat-lapack`.** The bidiagonal blocked phase and the
+  blocked Hessenberg reduction are ported as colmat-rs runs them, with their panel layout (rows
+  stored transposed) and their thresholds (§11.11). Their panels call level-2 primitives and their
+  trailing updates call GEMM. Only the small-size step is the fused primitive.
+- For the tridiagonal reduction, the blocked LAPACK variant (`latrd`, then `her2k`) is a later
+  candidate, compared with the fused step by the harness. Which one wins should depend on `n` and
+  the cache sizes.
 - The fused step's contract includes its rounding: it is not required to round like `her2`
   followed by `hemv`. Only the error bound of the reduction is guaranteed, as in §5.5.
 
@@ -473,7 +492,7 @@ primitive, or part of one, with the driver that needs it (§11.6 step 4).
 | # | colmat-rs kernel | one pass does | split into | expected cost of splitting |
 |---|---|---|---|---|
 | 1 | `lu/partial_pivoting/factor.rs`: `leaf_step_simd`, `lu_in_place_unblocked_simd` | scale the pivot column, rank-1 update of the leaf's columns, search for the next pivot | `scal`, `ger`, `iamax` | one more read of the leaf column; the leaf is narrow and usually in cache, so small to moderate |
-| 2 | `lu/full_pivoting/factor.rs`: `update_and_best_in_col_simd`, `update_and_best_in_mat_simd` | rank-1 update of the Schur complement and the search for its largest entry | `ger`, then an argmax over the matrix | one more read of the whole trailing matrix per step: large |
+| 2 | `lu/full_pivoting/factor.rs`: `update_and_best_in_col_simd`, `update_and_best_in_mat_simd` | rank-1 update of the Schur complement and the search for its largest entry; the row swap, done one column ahead inside the same sweep; in the transposed form, the scaling of the pivot row | `ger`, then an argmax over the matrix, and a separate `swap_rows` | one more read of the whole trailing matrix per step: large. A separate swap also brings back the dip at power-of-two leading dimensions that the fused swap removed (8 threads, 512: the fused version takes 0.342 of the time, `2026-11-19-lu-eigh-fullpiv-shapes.md`) |
 | 3 | `qr/col_pivoting/factor.rs`: `update_mat_and_dot_simd` | update of the trailing block and of the column norms used for the next pivot | `ger`, then the norms | one more read of the trailing block per step: large |
 | 4 | `cholesky/bunch_kaufman/factor.rs` (the step marked "the rank-1 or rank-2 update fused with the pivot search") | rank-1 or rank-2 update and the pivot search | update, then the search | one more read of the trailing block per step: large |
 | 5 | `householder.rs`: `apply_reflector_small`, `apply_reflector_pair_small` (used by the small path of `qr/no_pivoting/factor.rs` and by `qr/no_pivoting/unitary.rs`) | per column, the inner product with the reflector and the update; the pair version applies two reflectors in one pass | `gemv`, then `ger`; a pair as two single reflectors | up to twice the reads of the target columns |
@@ -496,3 +515,102 @@ Consequences:
   matrix and apply it with GEMM, so they lose nothing at the primitive boundary.
 - As in §11.8, a fused primitive guarantees the error bound of its operation, not the rounding of
   the split sequence.
+
+### 11.10 Contract additions from the §12 audit
+
+- **Clean vector state on return.** A backend's x86 kernels return with the upper halves of the
+  vector registers cleared (`vzeroupper`), and a team job ends the same way. colmat-rs does this in
+  `team::end_of_job` (`2026-11-19-eigh-dirty-upper-state.md`: `eigh` f64, 4 and 8 threads, 0.59–0.65
+  of the time without it). This repository has not ported it yet: `utils/simd.rs` and
+  `utils/team.rs` say it waits for the x86 kernels, which already run on teams here.
+- **The compact-WY factor build is a primitive.** `upgrade_householder_factor` (building `T` of
+  `I − V T Vᴴ`) joins the backend next to the block reflector apply, with its own plan: the
+  parallel floor checked once, and inner products on the calling thread for a basis of at most 8
+  columns. Without the floor a threaded 128x128 QR measured 4.2–4.6 times slower than sequential
+  (`2026-10-14-compact-factor-region-floor.md`).
+- **Scratch may depend on strides.** A driver that copies a row-major input into a column-major
+  buffer (QR, column-pivoting QR, partial-pivoting LU, `Llt::new`, `eigh` vectors) needs a buffer
+  whose size depends on the layout, not only on the shape. colmat-rs allocates it on the heap
+  because its scratch query sees the shape only. Here the query takes the layout class of the
+  call, so the buffer comes from the caller's scratch. Without the copy, column-pivoting QR 256²
+  in C order took 58.96 ms instead of 1.52 ms (`2026-10-15-row-major-adaptation-lu-colpiv.md`).
+- **Per-thread buffers become plan scratch.** The GEMM job tables and the TRSM staging buffer of
+  colmat-rs are per-thread buffers grown on demand. Under §11.5 they are part of the plan's
+  scratch.
+- **Uninitialised destinations.** A product with `Accum::Replace` never reads `dst`; colmat-rs uses
+  this to write into `MaybeUninit` storage. The safe view trait cannot express it, so the backend
+  offers a separate entry for an uninitialised destination, or the driver zero-fills. Open; low
+  impact.
+
+### 11.11 Where driver thresholds and rates live
+
+Drivers own constants that no primitive's `estimate` covers: the divide-and-conquer join rates,
+`secular_roots`, the repair rates, `lu_swap`, the LU look-ahead gate, `PANEL_TEAM`, the switch to
+divide and conquer on a team (`tridiag_evd_threshold` 16), the SVD divide-and-conquer threshold
+(40), the f64 LU leaf width (8), the QR block width rule, the small-QR gates, `BLOCK_FLOOR`, the
+Hessenberg `blocking_threshold`, and the tile-copy gates. They move with the driver, as constants
+of `colmat-lapack` keyed like §6, and later as rows of the generated tables (§6) with the driver
+as the "primitive" of the key. None of them is dropped as "a literal in a driver" during a port.
+
+## 12. Carry-over from colmat-rs
+
+**Principle (proposed in this trial).** The algorithms of colmat-rs are ported as they are. The
+backend boundary of §11 is drawn so that every one of them can be ported unchanged: where an
+algorithm fuses work across what would be two primitives, the fused work is one primitive
+(§11.8, §11.9); where it depends on a driver-level detail, the driver keeps that detail (§11.11).
+A port that cannot keep an optimization listed here says so in its PR, with a measurement.
+
+The table lists the fused kernels of §11.8 and §11.9, and the performance changes of colmat-rs
+whose work logs are dated October and November 2026 and that are in the code at `45a5be2`. It
+was compiled on 2026-11-28 from those work logs, `PATCHSET.md` and the code. Work logs are in
+colmat-rs `docs/worklogs/`. Reverted or rejected experiments are left out.
+
+| # | what | work log(s) | home in colmat-next |
+|---|---|---|---|
+| 1 | Blocked bidiagonalisation above 128: `dlabrd` panels of 16, transposed panel rows, one trailing product of width `2·ib`, no factor upgrade for values only | 10-23-blocked-bidiag, 11-14-svd-mkl-targets | driver (§11.8) |
+| 2 | Unblocked bidiagonal step at ≤128 with the row and previous reflector gathered contiguously | 10-23-svd-64-and-tall | fused primitive (§11.8) |
+| 3 | 64-byte column padding of the SVD and Pfaffian work matrices at strides that are multiples of 1 KiB (`work_rows`) | 10-23-blocked-bidiag, 10-31-pfaffian-176 | driver workspace |
+| 4 | dqds for values-only SVD, with the backed-off shift, `mul_add_impl` and the cached minimum | 10-23-dqds-values-only, 10-23-dqds-shift, 11-14-svd-mkl-targets | driver |
+| 5 | SVD divide-and-conquer threshold 128 → 40 | 11-12-svd-dc-threshold | driver constant (§11.11) |
+| 6 | Tridiagonal fused step | — (§11.8) | fused primitive |
+| 7 | Rotation sequence of the tridiagonal QR sweep, in chunks of 8, and `sqrt(1+t²)` in `make_givens` | 11-19-lu-eigh-fullpiv-shapes | fused primitive (§11.9 #6); `make_givens` in the driver |
+| 8 | Divide-and-conquer EVD on a team: secular roots split by width, weight and vector repair in parallel, switch threshold 16 on a team | 11-11-eigh-secular-root-split, 11-14-eigh-parallel-repair, 11-10-eigh-vs-mkl-small-sizes, 11-12-eigh-vs-mkl-evo2 | driver and its rates (§11.11) |
+| 9 | Values-only `eigh` through `sterf` (draft experiment) | 11-28-sa-evd-values-sterf-287 | driver |
+| 10 | Row-major `eigh` vectors computed column-major, copied once | 11-10-row-major-evd-u-and-cholesky | driver, stride-dependent scratch (§11.10) |
+| 11 | Blocked Hessenberg reduction above `256²` | — (code) | driver (§11.8) |
+| 12 | Partial-pivoting LU leaf: scaling, update and next pivot search in one pass | — (§11.9 #1) | fused primitive |
+| 13 | f64 LU leaf width 16 → 8 | 11-05-lu-leaf-width | driver constant (§11.11) |
+| 14 | LU one-panel look-ahead on teams of 4 or more | 11-19-lu-lookahead-panel | driver (§7) |
+| 15 | LU trailing-update and swap parallel gates | 10-14-lu-trailing-update-floor, 10-19-lu-work-floor-units | base cost helpers, driver rates |
+| 16 | TRSM right-hand side staged into a non-aliasing stride | 11-05-trsm-aliased-rhs | trsm plan (§7), plan scratch (§11.10) |
+| 17 | Full-pivoting LU: update, argmax and row swap in one sweep | 11-19-lu-eigh-fullpiv-shapes | fused primitive (§11.9 #2) |
+| 18 | Full-pivoting LU on row-major input through the transposed form | 11-09-full-piv-lu-row-major-dual | layout class of the fused primitive |
+| 19 | Partial-pivoting LU reusing the factor buffer (`factor_into`) | 11-18-lu-factor-buffer | facade |
+| 20 | Column-pivoting QR: trailing update and norm update in one pass | — (§11.9 #3) | fused primitive |
+| 21 | Bunch-Kaufman: update fused with the pivot search; candidates from scratch | 10-29-no-region-allocation | fused primitive (§11.9 #4) |
+| 22 | Row-major QR, column-pivoting QR and LU through a tiled copy to column-major | 10-15-qr-row-major-layout, 10-15-row-major-adaptation-lu-colpiv | driver, stride-dependent scratch (§11.10) |
+| 23 | `Llt::new` on row-major input: tiled triangular copy and its gates (power-of-two destination and source strides) | 11-06-row-major-triangular-copy, 11-10-power-of-two-column-stride, 11-12-tiled-copy-source-stride | base layout copy with its gates |
+| 24 | Small QR and thin `Q` through single and paired reflector applies, with their size gates | 11-22-small-qr-level2 | fused primitives (§11.9 #5), gates in the driver |
+| 25 | Compact-WY factor build: one floor check, inner products for ≤8 columns | 10-14-compact-factor-region-floor, 10-23-svd-64-and-tall | primitive (§11.10) |
+| 26 | Block reflector apply: the column split takes the whole thread budget | 10-18-qr-block-apply-splits | block reflector apply plan |
+| 27 | QR look-ahead on wide teams (`lookahead_width`, `PANEL_TEAM` 0.68) | 10-30-qr-lookahead | driver and its constants |
+| 28 | QR block width 16 on squares of 129–640 at 8 threads or more | 11-14-svd-mkl-targets | driver nb rule (§11.11) |
+| 29 | LQ with staged column-major panels and a row-major temporary in the block apply | 11-10-lq-staged-panels | driver; the temporary's layout is chosen by the block reflector apply's plan |
+| 30 | Cholesky/LDLT trailing update split into equal-area column ranges, with the part-count cap | 10-30-cholesky-area-split, 11-02-equal-area-partition-cap | herk/syrk plan, base partition |
+| 31 | Diagonal-scaled, indexed product of LDLT (`spicy_matmul`) on the kernel's team grid | 10-26-team-gemm-executor | to decide: a primitive next to herk, or a driver over GEMM |
+| 32 | Cholesky rank update step | — (§11.9 #7) | fused primitive |
+| 33 | Pfaffian: logical pivot relabelling, shared compact panel, two GEMMs per tile and one store of both skew triangles, panel 24 | 10-31-pfaffian, 10-31-pfaffian-byte-traffic, 11-02-pfaffian-supply | driver, not yet on the #54 list |
+| 34 | Real Schur small-n sweep with zipped reflector loops | 11-27-lahqr-sweep-285 | driver, not yet on the #54 list |
+| 35 | Parallel gates in every region: run when the serial estimate pays three times the dispatch cost, at the widest width that pays, rates keyed by host class | 10-26-dispatch-cost-floors, 10-26-remaining-gates, 10-29-width-per-region | base cost helpers and `estimate` (§5, §11.4) |
+| 36 | Join costs of divide-and-conquer SVD/EVD and `triangular_inverse` | 10-26-qr128-and-join-gates | driver rates (§11.11) |
+| 37 | Team regions allocate nothing (inline child slots, typed join slots) | 10-29-no-region-allocation | base team operations |
+| 38 | `vzeroupper` at the end of each team job | 11-19-eigh-dirty-upper-state | contract (§11.10); **not yet ported** |
+| 39 | Small native GEMM given threads only when it pays | 10-18-small-gemm-thread-floor | gemm plan width |
+| 40 | x86 GEMM on a team through the kernel's own job grid (`gemm_with`) | 10-26-team-gemm-executor | gemm plan (§7) |
+| 41 | GEMM job tables from a per-thread buffer | 11-04-gemm-team-job-tables | plan scratch (§11.10) |
+| 42 | Even tile grid for small GEMM on a team below 8 ms of serial work | 11-21-gemm-team-tile-split | gemm plan (§7); ported |
+| 43 | Overwrite-only product with `m = 1` through the matrix-vector branch | 11-03-matmul-uninit-thin | gemm plan / gemv |
+| 44 | Product into uninitialised storage | 10-29-matmul-uninit | open (§11.10) |
+
+Each driver PR that ports a routine lists the rows of this table it carries and shows the
+measurement for each one it changes.
