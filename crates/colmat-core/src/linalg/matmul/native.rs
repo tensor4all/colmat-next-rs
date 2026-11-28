@@ -44,19 +44,16 @@ use dyn_stack::{MemStack, StackReq};
 /// Products of at most this many multiply-adds run `nano-gemm` (colmat-rs's threshold).
 const NANO_GEMM_THRESHOLD: usize = 16 * 16 * 16;
 
-/// The x86-64 instruction set of `t4a-private-gemm-x86` on this host, if it has one.
+/// The x86-64 instruction set of `t4a-private-gemm-x86` on this host, if it has one: read from
+/// [`crate::host::info`], decided once per process (#55).
 #[cfg(all(target_arch = "x86_64", feature = "std"))]
 fn x86_instr() -> Option<private_gemm_x86::InstrSet> {
+	use crate::host::X86Kernel;
 	use private_gemm_x86::InstrSet;
-	// `is_x86_feature_detected!` caches its answer; this runs once per product, at its entry.
-	if std::arch::is_x86_feature_detected!("avx512f") {
-		Some(InstrSet::Avx512)
-	} else if std::arch::is_x86_feature_detected!("avx2")
-		&& std::arch::is_x86_feature_detected!("fma")
-	{
-		Some(InstrSet::Avx256)
-	} else {
-		None
+	match crate::host::info().x86_kernel() {
+		X86Kernel::Avx512 => Some(InstrSet::Avx512),
+		X86Kernel::Avx2 => Some(InstrSet::Avx256),
+		X86Kernel::None => None,
 	}
 }
 
@@ -188,24 +185,16 @@ where
 		return StackReq::EMPTY;
 	}
 	let ns = <NativeKernels as Gemm<T>>::ns_per_mac();
+	// The host probe (#55) runs once per process. Its SME and cache probes call `sysctl` on
+	// macOS, which allocates: run it here, in the query, so that the product that follows
+	// allocates nothing even when it is the first of the process. `t4a-gemm` reads the same
+	// cached answers. After the first call this is one atomic load.
+	let _ = crate::host::info();
 	#[cfg(all(target_arch = "x86_64", feature = "std"))]
 	if let Some(instr) = x86_instr() {
 		return split_product_scratch(m, n, k, par, ns, |r, c| {
 			x86_req(T::DTYPE, instr, r, c, k)
 		});
-	}
-	// `t4a-gemm` probes the host for SME once per process, on its first product, through
-	// `sysctl` calls that allocate. Probe here, in the query, so that the product that follows
-	// allocates nothing even when it is the first of the process. After the first call this
-	// is two atomic loads.
-	#[cfg(all(
-		target_arch = "aarch64",
-		target_vendor = "apple",
-		feature = "apple-sme"
-	))]
-	{
-		use gemm_common::cache::HasAppleSme;
-		let _ = (HasAppleSme::get(), HasAppleSme::get_f32());
 	}
 	split_product_scratch(m, n, k, par, ns, |r, c| {
 		gemm::gemm_scratch::<T>(r, c, k, gemm::Parallelism::None)

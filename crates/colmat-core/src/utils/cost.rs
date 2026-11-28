@@ -60,7 +60,7 @@ pub fn pays_at(
 /// The class of the machine, keyed by the kernel dispatch it will take, not by the CPU model.
 /// The serial rate table has one row per class. The enum and the detection are kept in sync by
 /// hand with `threadteam::HostClass`; a test compares the two when the parallel route is
-/// compiled.
+/// compiled. The class is derived from [`crate::host::HostInfo`]'s features.
 ///
 /// Rates and dispatch costs of one row must come from the same machine in the same clock state:
 /// switching the boost on moves both by about 1.66 times with a stable ratio (within a few
@@ -93,58 +93,11 @@ impl HostClass {
 		HostClass::Generic,
 	];
 
-	/// The class of this host, detected at the first call and cached. With `std`, `x86_64` uses
-	/// run time feature detection; without it the target features of the build decide.
+	/// The class of this host: [`crate::host::info`]'s [`class`](crate::host::HostInfo::class),
+	/// derived from the features probed once per process (#55). With `std`, `x86_64` uses run
+	/// time feature detection; without it the target features of the build decide.
 	pub fn detect() -> Self {
-		use core::sync::atomic::{AtomicU8, Ordering};
-		static CLASS: AtomicU8 = AtomicU8::new(0);
-		let c = CLASS.load(Ordering::Relaxed);
-		if c != 0 {
-			return Self::ALL[c as usize - 1];
-		}
-		let class = Self::detect_uncached();
-		let idx = Self::ALL.iter().position(|&k| k == class).unwrap();
-		CLASS.store(idx as u8 + 1, Ordering::Relaxed);
-		class
-	}
-
-	#[cfg(all(target_arch = "x86_64", feature = "std"))]
-	fn detect_uncached() -> Self {
-		if std::arch::is_x86_feature_detected!("avx512f") {
-			HostClass::X86_64Avx512
-		} else if std::arch::is_x86_feature_detected!("avx2")
-			&& std::arch::is_x86_feature_detected!("fma")
-		{
-			HostClass::X86_64Avx2
-		} else {
-			HostClass::X86_64Scalar
-		}
-	}
-
-	#[cfg(all(target_arch = "x86_64", not(feature = "std")))]
-	fn detect_uncached() -> Self {
-		if cfg!(target_feature = "avx512f") {
-			HostClass::X86_64Avx512
-		} else if cfg!(all(target_feature = "avx2", target_feature = "fma")) {
-			HostClass::X86_64Avx2
-		} else {
-			HostClass::X86_64Scalar
-		}
-	}
-
-	#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-	fn detect_uncached() -> Self {
-		HostClass::Aarch64Apple
-	}
-
-	#[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
-	fn detect_uncached() -> Self {
-		HostClass::Aarch64
-	}
-
-	#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-	fn detect_uncached() -> Self {
-		HostClass::Generic
+		crate::host::info().class
 	}
 
 	/// The class name used in the docs and the tables.
@@ -1058,7 +1011,6 @@ mod tests {
 		for _ in 0..4 {
 			assert_eq!(HostClass::detect(), c);
 		}
-		assert_eq!(HostClass::detect_uncached(), c);
 		assert_eq!(rates(), Rates::for_class(c));
 		assert_eq!(rate::bidiag(), rates().bidiag);
 		#[cfg(all(target_arch = "x86_64", feature = "std"))]

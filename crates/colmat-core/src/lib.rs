@@ -494,6 +494,7 @@ pub mod col;
 pub mod diag;
 /// element-wise equality
 mod eq;
+pub mod host;
 pub mod kernels;
 /// copies between matrices of different layouts
 pub mod layout;

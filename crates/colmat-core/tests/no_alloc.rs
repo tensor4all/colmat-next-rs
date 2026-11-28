@@ -270,6 +270,28 @@ fn on_fresh_threads(f: fn(Par<'_>)) {
 /// The tests of this file count on shared counters: one at a time.
 static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// The host probe (#55) runs once per process; every later read allocates nothing, on a thread
+/// that has not read it before.
+#[test]
+fn host_info_allocates_nothing_after_the_first_call() {
+	let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+	let first = *colmat_core::host::info();
+	std::thread::spawn(move || {
+		PARTICIPANT.with(|p| p.set(true));
+		let n_alloc = allocations(|| {
+			for _ in 0..4 {
+				assert_eq!(
+					*std::hint::black_box(colmat_core::host::info()),
+					first
+				);
+			}
+		});
+		assert_eq!(n_alloc, 0, "host::info allocated after its first call");
+	})
+	.join()
+	.unwrap();
+}
+
 #[test]
 fn native_matmul_allocates_nothing_after_a_warm_up() {
 	on_fresh_threads(|par| check_native_matmul(par, false));
