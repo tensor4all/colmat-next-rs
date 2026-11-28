@@ -331,6 +331,9 @@ Step 1 landed as #53 (#57) and step 2 as #55 (#58). Step 3 is now done as part o
 - **Vendor libraries (MKL, Accelerate, ...) are not a target.** The third parties in view are
   other native kernels: `colmat-xprec`, kernels for other CPUs (SVE, RISC-V), research kernels,
   and the tuning harness.
+- **Fused reduction steps are backend primitives** (§11.8). The one-step kernels of tridiagonal,
+  bidiagonal and Hessenberg reduction stay fused, so the trailing matrix is read once per step.
+  They are not rebuilt from separate rank-2 update and matrix-vector calls.
 
 ### 11.2 Why level 1 of §3 changes
 
@@ -345,6 +348,7 @@ therefore take `&self`.
 pub trait Backend<T: ComplexField>: Send + Sync {
     // level-3: gemm, herk/syrk, trsm, trmm, swap_rows, block reflector apply, ...
     // level-2: gemv, ger, symmetric/Hermitian matrix-vector and rank-2 update, trsv, ...
+    // fused: one step of tridiagonal, bidiagonal and Hessenberg reduction (§11.8)
     // each as a plan, scratch, estimate and run family (§4)
 }
 
@@ -404,7 +408,8 @@ scratch. The trait makes no stability promise until Cholesky, LU and QR run on i
    (absorbs §10 step 3). `GenericBackend` and `NativeBackend` implement it, and
    `ComplexField::Kernels` goes away.
 3. The conformance suite, run against both backends.
-4. Further primitives join the trait as #54 reaches them, level-2 and level-3 alike.
+4. Further primitives join the trait as #54 reaches them, level-2 and level-3 alike. The fused
+   reduction steps (§11.8) join with eigh and SVD (#54 stage 5).
 5. `colmat-lapack` appears with the first driver (Cholesky, #54 stage 2).
 
 ### 11.7 Open
@@ -417,3 +422,38 @@ scratch. The trait makes no stability promise until Cholesky, LU and QR run on i
   method.
 - The first open question of §10 (one `Primitive` trait or one family per primitive) is now a
   question about the methods of `Backend<T>`.
+
+### 11.8 Fused reduction steps (maintainer, 2026-11-28)
+
+colmat-rs reduces a self-adjoint matrix to tridiagonal form one column at a time, without the
+`latrd` panel and `her2k` update of LAPACK's `sytrd` (`faer/src/linalg/evd/tridiag.rs` at
+`45a5be2`, `tridiag_fused_op`). Each step runs one kernel that does two things on the trailing
+matrix `A`:
+
+1. the rank-2 update of the previous step, `A ← A − u·yᴴ − z·uᴴ` (an `her2`);
+2. the matrix-vector products of the next step, `z = A·u` and `y = Aᴴ·v` (an `hemv`).
+
+The updated `A` feeds the products while it is still in registers. Once `A` no longer fits in
+cache, both halves are limited by memory traffic:
+
+| | traffic over the trailing matrix per step |
+|---|---|
+| fused (colmat-rs) | one read and one write |
+| separate `her2`, then `hemv` | one read and one write, then one more read |
+
+So splitting the kernel costs about 1.3–1.5 times in that phase for large `n`. This is an
+estimate from the traffic count, not a measurement. Inside cache the difference is small. The
+same structure is in `bidiag_fused_op` (`svd/bidiag.rs`) and `hessenberg_fused_op`
+(`evd/hessenberg.rs`).
+
+Decision:
+
+- **Each fused step is a backend primitive of its own:** the tridiagonal step, the bidiagonal step
+  and the Hessenberg step. Each has its plan, scratch, estimate and run, like any other primitive.
+  This is §5.7 ("fused sweeps are primitives of their own") applied to the reductions.
+- `hemv`/`symv` and `her2`/`syr2` stay in the backend as separate level-2 primitives for their other
+  callers. The reductions call the fused primitive, not the pair.
+- The blocked LAPACK variant (`latrd`, then `her2k`) is a later candidate, compared with the fused
+  step by the harness. Which one wins should depend on `n` and the cache sizes.
+- The fused step's contract includes its rounding: it is not required to round like `her2`
+  followed by `hemv`. Only the error bound of the reduction is guaranteed, as in §5.5.
