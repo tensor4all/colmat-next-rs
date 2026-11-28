@@ -9,6 +9,16 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- `colmat-core` (#53): the rounding contract of a product on a team is run-to-run
+  reproducibility (the same binary, host class, call and team width give the same bits), not
+  bitwise equality with `Par::Seq`. On an Apple M4 or later `t4a-gemm` may take NEON for a tile
+  where the whole product takes SME, which is kept because it is faster
+  (`docs/design/kernel-selection.md` §5.3, §5.5, in #52). The rustdoc of `matmul_with_scratch`
+  and the design record say so. `team_result_is_bitwise_seq` is replaced by
+  `team_result_is_reproducible_per_width_*` (two calls at each width 1-8, through both entries)
+  and `team_result_is_within_the_bound_of_seq_*` (every width against the reference bound,
+  printing how many elements differ from `Par::Seq`), for `f64`, `f32` and `c64`, with #50's
+  shapes and shapes that cross the SME gate.
 - Tests (#37): the matrix-product tests also run the four native types through
   `generic::gemm_generic`, the product of a scalar that names `GenericKernels`, against the
   reference, and check that its team result is bitwise `Par::Seq`. These are new tests; the

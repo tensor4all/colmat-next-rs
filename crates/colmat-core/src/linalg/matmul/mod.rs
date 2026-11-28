@@ -119,17 +119,30 @@ fn driver_scratch<T: KernelField>(
 ///
 /// # Rounding on a team
 ///
-/// On a team the output is split and every element is computed as on one thread, so the result
-/// is bitwise that of `Par::Seq`, except for a column-major matrix-vector product (`n == 1`
-/// with a column-major `lhs`, or `m == 1` with a row-major `rhs`) of depth at least 1024 whose
-/// matrix is larger than 8 MiB or whose columns are at most 512 bytes. Its depth is split, as
-/// colmat-rs did, and the partial sums are added in order: the result rounds differently from
-/// `Par::Seq`, within the same error bound, and is the same on every call of the same width.
+/// **Guaranteed: the same call gives the same bits every time.** On one host class, the same
+/// binary called with the same shape, layout, conjugation, accumulation and team width (or
+/// `Par::Seq`) returns a bitwise identical result on every call: the split of the output, the
+/// kernel of each tile and the order of every addition depend on these inputs only, never on
+/// timing (#53).
 ///
-/// The packed native products call their kernel once per tile, so this also needs the kernel to
-/// group the depth of every element the same way whatever the tile's shape. `t4a-gemm` does since
-/// tensor4all/t4a-gemm#25 (#45); for `t4a-private-gemm-x86` on x86-64 it is read from the code
-/// but not tested (tensor4all/t4a-private-gemm-x86#24).
+/// **Not guaranteed: equality across widths.** `Par::Seq` and a team, or two team widths, may
+/// round differently, within the error bound of the product. Two causes are known:
+///
+/// - The packed native products call their kernel once per tile, and the kernel may choose its
+///   instruction set from the tile's shape. On an Apple M4 or later, with the `apple-sme`
+///   feature (a default), `t4a-gemm` takes SME for an `f64` `16 x 128 x 128` product but NEON
+///   for each of its `16 x 64` tiles on a team of two (`gemm_common::sme_thresholds`). The
+///   maintainer kept this because it is faster (#53; `docs/design/kernel-selection.md` §5.3,
+///   proposed in #52).
+/// - A column-major matrix-vector product (`n == 1` with a column-major `lhs`, or `m == 1` with
+///   a row-major `rhs`) of depth at least 1024 whose matrix is larger than 8 MiB or whose
+///   columns are at most 512 bytes splits its depth, as colmat-rs did, and adds the partial sums
+///   in order (#28).
+///
+/// Otherwise every element is computed as on one thread. A caller that needs the same bits
+/// from run to run must therefore also fix the team width. Since tensor4all/t4a-gemm#25 (#45),
+/// `t4a-gemm` groups the depth of every element the same way whatever the tile's shape. Before
+/// that, `f64` `257 x 3 x 513` differed between `Par::Seq` and a team on hosts without SME.
 ///
 /// # Panics
 ///
