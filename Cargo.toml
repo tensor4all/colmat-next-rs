@@ -62,7 +62,8 @@ debug = "line-tables-only"
 # by git revision, all in this table. `cargo deny` checks bans only, and the workspace is
 # not published, so a git source builds here.
 [patch.crates-io]
-# TODO(#34): move to the crates.io release of t4a-gemm that contains tensor4all/t4a-gemm#22.
-t4a-gemm = { git = "https://github.com/tensor4all/t4a-gemm", rev = "29b5b467c5f7147a9a14ae00613c7f848d0505a5" }
+# TODO(#34): move to the crates.io release of t4a-gemm that contains tensor4all/t4a-gemm#22 and
+# #25 (the blocking depth independent of the output shape, #45).
+t4a-gemm = { git = "https://github.com/tensor4all/t4a-gemm", rev = "745c4a7caa794418afc420e8b567f0bf9df02dd9" }
 # TODO(#34): as `t4a-gemm` (the same repository and revision).
-t4a-gemm-common = { git = "https://github.com/tensor4all/t4a-gemm", rev = "29b5b467c5f7147a9a14ae00613c7f848d0505a5" }
+t4a-gemm-common = { git = "https://github.com/tensor4all/t4a-gemm", rev = "745c4a7caa794418afc420e8b567f0bf9df02dd9" }

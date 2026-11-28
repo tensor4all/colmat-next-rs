@@ -721,7 +721,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm"
 version = "0.20.1"
-source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=745c4a7caa794418afc420e8b567f0bf9df02dd9#745c4a7caa794418afc420e8b567f0bf9df02dd9"
 dependencies = [
  "dyn-stack",
  "num-complex",
@@ -740,7 +740,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm-c32"
 version = "0.20.1"
-source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=745c4a7caa794418afc420e8b567f0bf9df02dd9#745c4a7caa794418afc420e8b567f0bf9df02dd9"
 dependencies = [
  "dyn-stack",
  "num-complex",
@@ -754,7 +754,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm-c64"
 version = "0.20.1"
-source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=745c4a7caa794418afc420e8b567f0bf9df02dd9#745c4a7caa794418afc420e8b567f0bf9df02dd9"
 dependencies = [
  "dyn-stack",
  "num-complex",
@@ -768,7 +768,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm-common"
 version = "0.20.4"
-source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=745c4a7caa794418afc420e8b567f0bf9df02dd9#745c4a7caa794418afc420e8b567f0bf9df02dd9"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -787,7 +787,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm-f16"
 version = "0.20.1"
-source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=745c4a7caa794418afc420e8b567f0bf9df02dd9#745c4a7caa794418afc420e8b567f0bf9df02dd9"
 dependencies = [
  "dyn-stack",
  "half",
@@ -803,7 +803,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm-f32"
 version = "0.20.1"
-source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=745c4a7caa794418afc420e8b567f0bf9df02dd9#745c4a7caa794418afc420e8b567f0bf9df02dd9"
 dependencies = [
  "dyn-stack",
  "num-complex",
@@ -817,7 +817,7 @@ dependencies = [
 [[package]]
 name = "t4a-gemm-f64"
 version = "0.20.1"
-source = "git+https://github.com/tensor4all/t4a-gemm?rev=29b5b467c5f7147a9a14ae00613c7f848d0505a5#29b5b467c5f7147a9a14ae00613c7f848d0505a5"
+source = "git+https://github.com/tensor4all/t4a-gemm?rev=745c4a7caa794418afc420e8b567f0bf9df02dd9#745c4a7caa794418afc420e8b567f0bf9df02dd9"
 dependencies = [
  "dyn-stack",
  "num-complex",

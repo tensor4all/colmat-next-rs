@@ -45,6 +45,12 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- `colmat-core` (#45): a product of depth above 512 on a team whose tiles are at most `64 x 64`
+  (`f64` `257 x 3 x 513`, widths 2-8) rounded differently from `Par::Seq`. `t4a-gemm` cut the
+  depth into chunks by the shape of each call; it is pinned to `745c4a7`, which contains
+  tensor4all/t4a-gemm#25, and `team_result_is_bitwise_seq` checks two such shapes at widths 2-8
+  (it fails with the previous pin). The rustdoc of `matmul_with_scratch` and the design record
+  state that the equality needs the kernel's blocking not to depend on the tile's shape.
 - Tests (#37): the matrix-product tests also run the four native types through
   `generic::gemm_generic`, the product of a scalar that names `GenericKernels`, against the
   reference, and check that its team result is bitwise `Par::Seq`. Before, it ran only under

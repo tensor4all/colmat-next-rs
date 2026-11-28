@@ -126,6 +126,11 @@ fn driver_scratch<T: KernelField>(
 /// colmat-rs did, and the partial sums are added in order: the result rounds differently from
 /// `Par::Seq`, within the same error bound, and is the same on every call of the same width.
 ///
+/// The packed native products call their kernel once per tile, so this also needs the kernel to
+/// group the depth of every element the same way whatever the tile's shape. `t4a-gemm` does since
+/// tensor4all/t4a-gemm#25 (#45); for `t4a-private-gemm-x86` on x86-64 it is read from the code
+/// but not tested (tensor4all/t4a-private-gemm-x86#24).
+///
 /// # Panics
 ///
 /// When the shapes do not agree (`dst` is `m x n`, `lhs` is `m x k`, `rhs` is `k x n`), or when
