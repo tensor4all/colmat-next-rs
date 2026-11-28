@@ -1,6 +1,8 @@
 # Kernel selection and the tuning harness
 
 **Status: proposed in this trial (2026-11-28).** This is a design for review in #44, #45 and #46.
+§11 (the backend boundary, #60) records decisions the maintainer took on 2026-11-28 and revises
+level 1 of §3.
 It is not a decision of the colmat maintainers. It does not change any code. Where it relies on
 colmat-rs, it cites the commit or the work log.
 
@@ -32,7 +34,9 @@ colmat-rs, it cites the commit or the work log.
 
 **Level 1, type level: static.** The scalar names its provider (`ComplexField::Kernels`), and the
 hook traits (`Gemm<T>`, ...) are implemented for the provider and the scalar together. This is
-the design of #23 and it stays as it is. It answers "which implementations exist for `T`". It
+the design of #23. **Revised by §11:** the provider becomes a backend value `B: Backend<T>` that
+the caller passes, no longer tied to the scalar; the rest of this paragraph holds for it
+unchanged. It answers "which implementations exist for `T`". It
 costs nothing at run time, keeps `transmute` out of safe code, and lets `colmat-xprec` attach
 `Df64` kernels without a registry. **Function pointers are not used here.** A generic scalar never
 pays for an indirect call.
@@ -60,7 +64,8 @@ enough that an indirect call is not measurable.
 
 Why not a run-time plug-in registry (`dyn Kernels`, kernels registered by users): #2 chose static
 binding, and no consumer needs to swap kernels at run time. The table is internal to the provider.
-Overrides exist for experiments (§5.6), not as an extension API.
+Overrides exist for experiments (§5.6), not as an extension API. A third party replaces the whole
+backend statically, by type (§11), not by registering kernels.
 
 ## 4. Sketch
 
@@ -308,3 +313,107 @@ First steps, each its own issue and PR:
 4. Stage 1 of the harness in `colmat-benchmark` (§8.1).
 5. `tuning` and `COLMAT_FORCE_KERNEL`, then the first generated table for GEMM on evo, checked on a
    second host.
+
+Step 2 landed as #55 (#58). Step 3 is now done as part of the backend split (§11.6, #60).
+
+## 11. The backend boundary (#60)
+
+### 11.1 Decisions (maintainer, 2026-11-28)
+
+- **A third party can replace the backend of the primitives.** The LAPACK-level routines take the
+  backend as a parameter. The backend trait is defined outside `colmat-core`, and the LAPACK part
+  is a generic crate of its own.
+- **Level-2 operations belong to the backend**, next to level-3. Panel factorisations spend most
+  of their time in level-2: the LU, QR and Cholesky panels, and above all the `latrd`/`labrd`
+  panels of tridiagonal and bidiagonal reduction, where level-2 is about half the work.
+- **No per-primitive replacement.** A backend implements the whole trait. One that supplies only
+  some primitives holds the native backend and delegates the rest in plain Rust. No combinator.
+- **Vendor libraries (MKL, Accelerate, ...) are not a target.** The third parties in view are
+  other native kernels: `colmat-xprec`, kernels for other CPUs (SVE, RISC-V), research kernels,
+  and the tuning harness.
+
+### 11.2 Why level 1 of §3 changes
+
+`ComplexField::Kernels` ties the backend to the scalar. `colmat-traits` fixes it to
+`NativeKernels` for `f64`, so by the orphan rule nobody outside can give `f64` another GEMM
+without inventing a new scalar type. Passing the backend as a value removes that tie. A value
+rather than a bare type also lets the backend carry its state: the `KernelTable`, the host
+record and the `tuning` override (§3, §5.6). In §4 `plan`, `scratch`, `estimate` and `run`
+therefore take `&self`.
+
+```rust
+pub trait Backend<T: ComplexField>: Send + Sync {
+    // level-3: gemm, herk/syrk, trsm, trmm, swap_rows, block reflector apply, ...
+    // level-2: gemv, ger, symmetric/Hermitian matrix-vector and rank-2 update, trsv, ...
+    // each as a plan, scratch, estimate and run family (§4)
+}
+
+pub fn cholesky<T: ComplexField, B: Backend<T>>(
+    backend: &B, a: MatMut<'_, T>, par: Par<'_>, stack: &mut MemStack,
+) -> Result<(), CholeskyError>;
+```
+
+Dispatch stays static: `colmat-lapack` is monomorphised per backend, and a binary normally holds
+one. A `dyn` backend is out of scope.
+
+### 11.3 Crates (names provisional)
+
+| crate | contents |
+|---|---|
+| `colmat-traits` | scalars, as today, without `Kernels` |
+| `colmat-base` | views, `Par`/`ParShape`, the team operations (`with_team`, `run`, `for_each`, `for_each_child`), `MemStack`, partition helpers, generic level-1, cost-model helpers |
+| `colmat-primitives` | `Backend<T>`, its contract, `GenericBackend` (reference and fallback), and a conformance suite that third parties run in their own CI |
+| `colmat-kernels` | `NativeBackend`: `HostInfo`, `KernelTable`, the generated tables (§6), the `t4a-gemm`, `t4a-private-gemm-x86` and `nano-gemm` kernels. The x86 prefetch experiments (colmat-rs#253 E3/E4), deferred to this repository, land here |
+| `colmat-lapack` | Cholesky, LU, QR, eigh, SVD, generic over `B` |
+| `colmat` | facade; picks the default backend per scalar |
+
+The trait takes safe views, not raw pointers and strides. A wrong backend then gives wrong
+numbers, never undefined behaviour, and a backend that calls foreign code keeps its `unsafe`
+inside. This is why the views move below the trait crate. The layout changes the candidate
+crates of #2 and of meta `next-generation-dense-linear-algebra.md`, which are updated when #60
+lands.
+
+### 11.4 Parallelism
+
+- **The tools** (`Par`, the team operations) live in `colmat-base` and are shared.
+  `Par::Team(TeamExec)` is the authority over the reserved members, so a backend can only use
+  the members it is given. Starting threads of its own is forbidden by the contract; the type
+  system cannot prevent it.
+- **Inside a primitive** the backend decides the width, the tile grid and any depth split, through
+  its plan. It may use fewer members than it is given (§5.1).
+- **Across primitives** `colmat-lapack` decides: look-ahead, panel and update overlap, recursion,
+  divide and conquer. It splits the team with `for_each_child`, hands each child to a backend
+  call, and chooses widths from the backends' `estimate` (§5.7). A nested call sees only its
+  child team.
+- **Reproducibility** (§5.5): both layers decide from the call, the width and the host class
+  only. Claiming disjoint output tiles through a counter is fine, since no tile's result depends
+  on which member ran it. A reduction split across members (depth split, norms) has a fixed order.
+
+### 11.5 Contract and stability
+
+The contract of §5 is the backend's contract, written in `colmat-primitives` and checked by the
+conformance suite: the result and its error bound, run-to-run reproducibility, the pivot
+tie-breaking, running on the given members only, and allocating nothing beyond the planned
+scratch. The trait makes no stability promise until Cholesky, LU and QR run on it (stage 4 of
+#54). Adding a primitive before then breaks third-party backends, and that is accepted.
+
+### 11.6 Steps
+
+1. Move the views, `Par` and the team operations from `colmat-core` into `colmat-base`. Pure move.
+2. `colmat-primitives` with `Backend<T>` holding GEMM only, as a plan, scratch and run triple
+   (absorbs §10 step 3). `GenericBackend` and `NativeBackend` implement it, and
+   `ComplexField::Kernels` goes away.
+3. The conformance suite, run against both backends.
+4. Further primitives join the trait as #54 reaches them, level-2 and level-3 alike.
+5. `colmat-lapack` appears with the first driver (Cholesky, #54 stage 2).
+
+### 11.7 Open
+
+- Whether level-1 (`nrm2`, `dot`, `iamax`, `scal`, `axpy`) joins the backend too. Proposed: it
+  stays generic in `colmat-base` until the harness shows a panel limited by it.
+- How the facade picks the default backend of a scalar (for example a trait on the scalar,
+  implemented in `colmat` and in `colmat-xprec`).
+- The block-size query of the drivers (`nb` per primitive, the `ILAENV` equivalent) as a backend
+  method.
+- The first open question of §10 (one `Primitive` trait or one family per primitive) is now a
+  question about the methods of `Backend<T>`.
