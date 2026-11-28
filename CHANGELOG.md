@@ -9,6 +9,12 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- `colmat-core` (#55): `host::info()` returns a `HostInfo`, decided once per process: the x86-64
+  features (`avx2_fma`, `avx512f`), the aarch64 ones (`neon`, `fcma`, and SME for `f64` and
+  `f32` through `t4a-gemm`'s `HasAppleSme`), the cache sizes `t4a-gemm` blocks for, and the
+  cost model's `HostClass`, derived from those fields. The kernel entry (`x86_instr`, the SME
+  probe in the scratch query) and `HostClass::detect` read it instead of running their own
+  detection, so they cannot disagree. No product changes its kernel or its width.
 - `colmat-core` (#53): the rounding contract of a product on a team is run-to-run
   reproducibility (the same binary, host class, call and team width give the same bits), not
   bitwise equality with `Par::Seq`. On an Apple M4 or later `t4a-gemm` may take NEON for a tile
