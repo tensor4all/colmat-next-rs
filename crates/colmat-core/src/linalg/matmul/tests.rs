@@ -344,8 +344,12 @@ fn matmul_matches_the_reference_c32() {
 }
 
 // The generic kernels on the native types, whose SIMD registers they then use: the product of
-// a scalar that names `GenericKernels`. Under Miri the native types already take these kernels
-// (the tests above), so they are skipped there.
+// a scalar that names `GenericKernels`. They are skipped under Miri because they would repeat
+// work done there: `native_gemm` returns `gemm_generic` for every native type under `cfg(miri)`
+// (`native.rs`), so `matmul_matches_the_reference_f64` and `_c64` above already take the
+// generic path in the weekly Miri jobs (`heavy-tests.yml`, Stacked and Tree Borrows). Miri runs
+// it on one thread only: the team tests are `not(miri)`, since threadteam's pool calls foreign
+// functions Miri does not support. This holds for the native kernels' team path too.
 #[test]
 #[cfg_attr(
 	miri,

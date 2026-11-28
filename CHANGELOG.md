@@ -9,6 +9,12 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- Tests (#37): the matrix-product tests also run the four native types through
+  `generic::gemm_generic`, the product of a scalar that names `GenericKernels`, against the
+  reference, and check that its team result is bitwise `Par::Seq`. These are new tests; the
+  library code did not change. Before them, only the weekly Miri jobs ran that path, on one
+  thread, where the native types fall back to it. Depth 0 is left out: the driver handles it and
+  never passes it to a hook.
 - CI (#37): a weekly, report-only line-coverage job (`coverage.yml`; see `CONTRIBUTING.md`).
 - CI (#37): the coverage job fixes the property tests' seed (`PROPTEST_RNG_SEED=20261120`), so
   that its number does not move between runs of one commit (`docs/coverage.md`).
@@ -51,10 +57,6 @@ All notable changes are recorded here. The format follows
   tensor4all/t4a-gemm#25, and `team_result_is_bitwise_seq` checks two such shapes at widths 2-8
   (it fails with the previous pin). The rustdoc of `matmul_with_scratch` and the design record
   state that the equality needs the kernel's blocking not to depend on the tile's shape.
-- Tests (#37): the matrix-product tests also run the four native types through
-  `generic::gemm_generic`, the product of a scalar that names `GenericKernels`, against the
-  reference, and check that its team result is bitwise `Par::Seq`. Before, it ran only under
-  Miri. Depth 0 is left out: the driver handles it and never passes it to a hook.
 - Tests (#41): the team checks of `tests/no_alloc.rs` wait until the pool members have stopped
   allocating (four quiet 50 ms windows in a row) instead of a fixed 50 ms, so a loaded macOS host
   no longer counts a member's one-time set-up against the call. Under twice as many spinning
