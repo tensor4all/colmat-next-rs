@@ -331,6 +331,10 @@ Step 1 landed as #53 (#57) and step 2 as #55 (#58). Step 3 is now done as part o
 - **Vendor libraries (MKL, Accelerate, ...) are not a target.** The third parties in view are
   other native kernels: `colmat-xprec`, kernels for other CPUs (SVE, RISC-V), research kernels,
   and the tuning harness.
+- **Fused reduction steps are backend primitives** (§11.8). The one-step kernels of tridiagonal,
+  bidiagonal and Hessenberg reduction stay fused, so the trailing matrix is read once per step.
+  They are not rebuilt from separate rank-2 update and matrix-vector calls. The same holds for
+  the other fused kernels of colmat-rs listed in §11.9.
 
 ### 11.2 Why level 1 of §3 changes
 
@@ -345,6 +349,7 @@ therefore take `&self`.
 pub trait Backend<T: ComplexField>: Send + Sync {
     // level-3: gemm, herk/syrk, trsm, trmm, swap_rows, block reflector apply, ...
     // level-2: gemv, ger, symmetric/Hermitian matrix-vector and rank-2 update, trsv, ...
+    // fused: one step of tridiagonal, bidiagonal and Hessenberg reduction (§11.8)
     // each as a plan, scratch, estimate and run family (§4)
 }
 
@@ -404,16 +409,90 @@ scratch. The trait makes no stability promise until Cholesky, LU and QR run on i
    (absorbs §10 step 3). `GenericBackend` and `NativeBackend` implement it, and
    `ComplexField::Kernels` goes away.
 3. The conformance suite, run against both backends.
-4. Further primitives join the trait as #54 reaches them, level-2 and level-3 alike.
+4. Further primitives join the trait as #54 reaches them, level-2 and level-3 alike. The fused
+   reduction steps (§11.8) join with eigh and SVD (#54 stage 5). The fused kernels of §11.9 join
+   with the driver that needs them: the partial-pivoting leaf with LU, the small reflector
+   applies with QR, the rotation sequence with eigh and SVD.
 5. `colmat-lapack` appears with the first driver (Cholesky, #54 stage 2).
 
 ### 11.7 Open
 
 - Whether level-1 (`nrm2`, `dot`, `iamax`, `scal`, `axpy`) joins the backend too. Proposed: it
-  stays generic in `colmat-base` until the harness shows a panel limited by it.
+  stays generic in `colmat-base` until the harness shows a panel limited by it. This covers
+  level-1 called on its own only. A pivot search or a norm update that a factorisation runs
+  together with its update is part of a fused primitive (§11.9), never a separate `iamax` or
+  `nrm2` call.
 - How the facade picks the default backend of a scalar (for example a trait on the scalar,
   implemented in `colmat` and in `colmat-xprec`).
 - The block-size query of the drivers (`nb` per primitive, the `ILAENV` equivalent) as a backend
   method.
 - The first open question of §10 (one `Primitive` trait or one family per primitive) is now a
   question about the methods of `Backend<T>`.
+
+### 11.8 Fused reduction steps (maintainer, 2026-11-28)
+
+colmat-rs reduces a self-adjoint matrix to tridiagonal form one column at a time, without the
+`latrd` panel and `her2k` update of LAPACK's `sytrd` (`faer/src/linalg/evd/tridiag.rs` at
+`45a5be2`, `tridiag_fused_op`). Each step runs one kernel that does two things on the trailing
+matrix `A`:
+
+1. the rank-2 update of the previous step, `A ← A − u·yᴴ − z·uᴴ` (an `her2`);
+2. the matrix-vector products of the next step, `z = A·u` and `y = Aᴴ·v` (an `hemv`).
+
+The updated `A` feeds the products while it is still in registers. Once `A` no longer fits in
+cache, both halves are limited by memory traffic:
+
+| | traffic over the trailing matrix per step |
+|---|---|
+| fused (colmat-rs) | one read and one write |
+| separate `her2`, then `hemv` | one read and one write, then one more read |
+
+So splitting the kernel costs about 1.3–1.5 times in that phase for large `n`. This is an
+estimate from the traffic count, not a measurement. Inside cache the difference is small. The
+same structure is in `bidiag_fused_op` (`svd/bidiag.rs`) and `hessenberg_fused_op`
+(`evd/hessenberg.rs`).
+
+Decision:
+
+- **Each fused step is a backend primitive of its own:** the tridiagonal step, the bidiagonal step
+  and the Hessenberg step. Each has its plan, scratch, estimate and run, like any other primitive.
+  This is §5.7 ("fused sweeps are primitives of their own") applied to the reductions.
+- `hemv`/`symv` and `her2`/`syr2` stay in the backend as separate level-2 primitives for their other
+  callers. The reductions call the fused primitive, not the pair.
+- The blocked LAPACK variant (`latrd`, then `her2k`) is a later candidate, compared with the fused
+  step by the harness. Which one wins should depend on `n` and the cache sizes.
+- The fused step's contract includes its rounding: it is not required to round like `her2`
+  followed by `hemv`. Only the error bound of the reduction is guaranteed, as in §5.5.
+
+### 11.9 The other fused kernels (maintainer, 2026-11-28)
+
+A survey of colmat-rs at `45a5be2` (`faer/src/linalg`) found seven more families of kernels that do
+in one pass what separate level-1/2 calls would do in two or more. Each becomes a backend
+primitive, or part of one, with the driver that needs it (§11.6 step 4).
+
+| # | colmat-rs kernel | one pass does | split into | expected cost of splitting |
+|---|---|---|---|---|
+| 1 | `lu/partial_pivoting/factor.rs`: `leaf_step_simd`, `lu_in_place_unblocked_simd` | scale the pivot column, rank-1 update of the leaf's columns, search for the next pivot | `scal`, `ger`, `iamax` | one more read of the leaf column; the leaf is narrow and usually in cache, so small to moderate |
+| 2 | `lu/full_pivoting/factor.rs`: `update_and_best_in_col_simd`, `update_and_best_in_mat_simd` | rank-1 update of the Schur complement and the search for its largest entry | `ger`, then an argmax over the matrix | one more read of the whole trailing matrix per step: large |
+| 3 | `qr/col_pivoting/factor.rs`: `update_mat_and_dot_simd` | update of the trailing block and of the column norms used for the next pivot | `ger`, then the norms | one more read of the trailing block per step: large |
+| 4 | `cholesky/bunch_kaufman/factor.rs` (the step marked "the rank-1 or rank-2 update fused with the pivot search") | rank-1 or rank-2 update and the pivot search | update, then the search | one more read of the trailing block per step: large |
+| 5 | `householder.rs`: `apply_reflector_small`, `apply_reflector_pair_small` (used by the small path of `qr/no_pivoting/factor.rs` and by `qr/no_pivoting/unitary.rs`) | per column, the inner product with the reflector and the update; the pair version applies two reflectors in one pass | `gemv`, then `ger`; a pair as two single reflectors | up to twice the reads of the target columns |
+| 6 | `evd/tridiag_evd.rs`: `apply_rotation_sequence` | the whole rotation sequence of one implicit QR sweep, with a strip of rows kept in registers, so each column is loaded and stored once per sweep | one rotation at a time | **measured** in colmat-rs#234: at f64 `n = 128`, one thread, the rotation-at-a-time loop took about 1.2 ms of a 2.4 ms `eigh` |
+| 7 | `cholesky/llt/update.rs`, `cholesky/ldlt/update.rs`: `rank_update_step_simd` | one step of updating a Cholesky factor by a low-rank term | separate updates of the column and the workspace | moderate |
+
+Only #6 is a measurement. The others are estimates from the number of passes over memory.
+
+Consequences:
+
+- **Pivot search fused with the update (#1–#4) is a backend primitive**, one for each pivoting
+  scheme: the partial-pivoting leaf, full pivoting, column-pivoting QR and Bunch-Kaufman. The
+  tie-breaking that drivers depend on (§5.5, colmat-rs#105) is part of these primitives' contract.
+  This is why §11.7 keeps generic level-1 for standalone calls only.
+- **Small reflector applies (#5)**, single and pair, are primitives next to the block reflector
+  apply of §5.7. The rotation sequence (#6) is the rotation-sequence primitive §5.7 already names.
+- **Cholesky rank update (#7)** joins when factor updates are ported. It is not on the #54 path.
+- Not affected: standalone reductions (`reductions/norm_max.rs`, `reductions/sum.rs`) are level-1
+  on their own. The multishift sweeps of Schur and QZ accumulate rotations into a small orthogonal
+  matrix and apply it with GEMM, so they lose nothing at the primitive boundary.
+- As in §11.8, a fused primitive guarantees the error bound of its operation, not the rounding of
+  the split sequence.
