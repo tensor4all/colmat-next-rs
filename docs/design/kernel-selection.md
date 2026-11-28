@@ -314,7 +314,7 @@ First steps, each its own issue and PR:
 5. `tuning` and `COLMAT_FORCE_KERNEL`, then the first generated table for GEMM on evo, checked on a
    second host.
 
-Step 2 landed as #55 (#58). Step 3 is now done as part of the backend split (§11.6, #60).
+Step 1 landed as #53 (#57) and step 2 as #55 (#58). Step 3 is now done as part of the backend split (§11.6, #60).
 
 ## 11. The backend boundary (#60)
 
