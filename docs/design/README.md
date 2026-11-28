@@ -20,6 +20,10 @@ proposed.
 
 ## Records
 
+- [`kernel-selection.md`](kernel-selection.md): how a primitive chooses its kernel (a static
+  provider per scalar, a host kernel table of function pointers resolved once, and a plan per
+  call that serves the scratch query, the estimate and the run), thresholds generated from
+  measurements, and the tuning harness (#44, #45, #46; proposed).
 - [`trial-architecture.md`](trial-architecture.md): how this trial applies #2 and the design
   document, the proposed crate layout and boundaries, what is ported from colmat-rs, and the first
   slice (proposed).

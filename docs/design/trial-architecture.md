@@ -171,15 +171,23 @@ until recorded in meta.
 | `fx128` in `colmat-traits` | Leave; extended precision attaches from `colmat-xprec` | Debt C2 |
 | Sparse, operator, stats, io, ffi | Leave out of the first scope | Not needed by the first users |
 
-## 7. First slice and order (proposed)
+## 7. First slice and order
 
-1. `colmat-traits`: S0, `Precision`, `SimdField`; `f64`, `f32` and the generic complex.
+Steps 1 and 2 are done (#6, #12, #20, #23). On 2026-11-28 the maintainer reordered the rest. The
+native types come first, kernel selection is per CPU, and extended precision is last. The
+umbrella is #54.
+
+1. `colmat-traits`: S0, `Precision`, `SimdField`; `f64`, `f32` and the generic complex. Done.
 2. `colmat-core`: views, `Par`, skeletons, cost model, workspace; the P1 hook with the native
-   kernels and a generic kernel. Gate: native non-regression (principle 4).
-3. `colmat-xprec`: `Df64` support and a packed P1 kernel, with the generic kernel as the portable
+   kernels and a generic kernel. Gate: native non-regression (principle 4). Done.
+3. Primitives for `f64`, `f32`, `c32` and `c64`, with per-CPU kernel selection
+   (`kernel-selection.md`): the host probe, plans, `herk`/`syrk`, `trsm`, `swap_rows`, `trmm` and
+   block reflector apply. The tuning harness starts in parallel on colmat-rs (#46).
+4. `colmat`, in the order that reaches every level-3 primitive: Cholesky, then LU, then QR
+   (tall-thin first, for sparse-ir-rs's SVE), then eigh and SVD. Each factorisation validates the
+   selection tables of the primitives it calls.
+5. `colmat-xprec`: `Df64` support and a packed P1 kernel, with the generic kernel as the portable
    default. x86 SIMD kernels are later work.
-4. `colmat`: tall thin QR first (the shape of sparse-ir-rs's SVE workload), then the drivers it
-   needs.
 
 Each step is an issue and a pull request in this repository.
 
