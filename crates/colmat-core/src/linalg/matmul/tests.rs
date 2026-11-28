@@ -430,84 +430,220 @@ fn mismatched_shapes_panic() {
 	matmul(&mut c, Accum::Replace, &a, &b, 1.0, Par::Seq);
 }
 
-/// On a team the product splits the output, never the depth, so every element is computed in
-/// the same order as on one thread: the result is bitwise that of `Par::Seq` at every width, and
-/// the parallel path did run. This needs the kernels' blocking of the depth not to depend on the
-/// tile's shape: `(257, 3, 513)` and `(130, 130, 1024)` cut tiles of at most `64 x 64` from a
-/// product deeper than 512, which `t4a-gemm` blocked differently from the whole product until
-/// tensor4all/t4a-gemm#25 (#45). The column-major matrix-vector product splits its depth above
-/// the size of `generic::depth_split` (`team_matvec_depth_split_*` below); the shapes here stay
-/// below it.
+/// The shapes of the team tests for `T`: gemm (both splits), matrix-vector (both layouts) and
+/// rank-one shapes large enough to pay for a team; `257 x 3 x 513` and `130 x 130 x 1024`, whose
+/// tiles of at most `64 x 64` `t4a-gemm` blocked differently from the whole product until
+/// tensor4all/t4a-gemm#25 (#45); and shapes whose whole product passes `t4a-gemm`'s SME gate
+/// (`gemm_common::sme_thresholds`) while its tiles on a team may not (#53), which only an SME
+/// host (an Apple M4 or later) tells apart.
 #[cfg(all(feature = "threadteam", not(miri)))]
-#[test]
-fn team_result_is_bitwise_seq() {
-	use crate::utils::team::{stats, with_team};
-	let mut rng = Rng(11);
-	// gemm (both splits), matrix-vector (both layouts) and rank-one shapes, large enough to pay
-	for &(m, n, k) in &[
-		(256usize, 256usize, 256usize),
+fn team_shapes<T: TestScalar>() -> Vec<(usize, usize, usize)> {
+	let mut s = vec![
+		(256, 256, 256),
 		(256, 3, 256),
 		(4096, 1, 512),
 		(1, 2048, 2048),
 		(2048, 2048, 1),
 		(257, 3, 513),
 		(130, 130, 1024),
-	] {
-		let a = Mat::<f64>::from_fn(m, k, |_, _| rng.next());
-		let b = Mat::<f64>::from_fn(k, n, |_, _| rng.next());
-		let mut seq = Mat::<f64>::zeros(m, n);
-		matmul(&mut seq, Accum::Replace, &a, &b, 1.5, Par::Seq);
-		for width in 2..=8 {
-			let mut team = Mat::<f64>::zeros(m, n);
-			let ran = with_team(width, |par| {
-				stats::enable(true);
-				let _ = stats::take();
-				matmul(&mut team, Accum::Replace, &a, &b, 1.5, par);
-				stats::enable(false);
-				let s = stats::take();
-				s.run.iter().skip(2).sum::<usize>()
-					+ s.split.iter().skip(2).sum::<usize>()
-			});
-			// The cost model keeps `256 x 3 x 256` on one thread below width 4; every other
-			// shape here, and these two at every width, take the team path.
-			if width >= 4 || k > 512 {
+	];
+	// `f64`/`c64` take SME from `m * n >= 2048` and `m * n * k >= 131072`; `f32` from four
+	// times that work. A team of two halves `m * n` below the gate.
+	s.extend(match core::mem::size_of::<T>() {
+		4 => &[(64, 64, 64), (64, 64, 128)][..],
+		_ => &[(16, 128, 128), (32, 64, 64)][..],
+	});
+	s
+}
+
+/// `dst := 1.5 * lhs * rhs` on `par`: through [`matmul`] (the kernels' thread-locals,
+/// `Gemm::gemm_alloc`) or, when `stacked`, through [`matmul_with_scratch`] (the packing memory
+/// from the stack, `Gemm::gemm`). Returns the result and whether the team path ran.
+#[cfg(all(feature = "threadteam", not(miri)))]
+fn team_product<T: TestScalar>(
+	a: &Mat<T>,
+	b: &Mat<T>,
+	width: usize,
+	stacked: bool,
+) -> (Mat<T>, bool) {
+	use crate::utils::team::{stats, with_team};
+	let (m, n, k) = (a.nrows(), b.ncols(), a.ncols());
+	let alpha = T::new(1.5, -0.25);
+	let mut dst = Mat::<T>::zeros(m, n);
+	let mut go = |par: Par<'_>| {
+		if stacked {
+			let mut buf =
+				MemBuffer::new(matmul_scratch::<T>(m, n, k, par.shape()));
+			matmul_with_scratch(
+				&mut dst,
+				Accum::Replace,
+				a,
+				Conj::No,
+				b,
+				Conj::No,
+				alpha,
+				par,
+				MemStack::new(&mut buf),
+			);
+		} else {
+			matmul(&mut dst, Accum::Replace, a, b, alpha, par);
+		}
+	};
+	let ran = if width == 1 {
+		go(Par::Seq);
+		false
+	} else {
+		with_team(width, |par| {
+			stats::enable(true);
+			let _ = stats::take();
+			go(par);
+			stats::enable(false);
+			let s = stats::take();
+			s.run.iter().skip(2).sum::<usize>()
+				+ s.split.iter().skip(2).sum::<usize>()
+				> 0
+		})
+	};
+	(dst, ran)
+}
+
+/// Run-to-run reproducibility, the guarantee of [`matmul_with_scratch`], "Rounding on a team"
+/// (#53): two calls with the same shape and the same width, `Par::Seq` or a team of 2 to 8,
+/// give the same bits, through either entry. Whether the cost model puts a shape on a team
+/// depends on the host and the type. For `f64` (`require_team`) every shape must take the team
+/// path at some width, as on CI and on an Apple M1 Pro. For the other types a shape that stays
+/// on one thread at every width is reported on stdout: on an M1 Pro, `f32` `256 x 3 x 256`.
+#[cfg(all(feature = "threadteam", not(miri)))]
+fn team_result_is_reproducible_per_width<T: TestScalar>(
+	name: &str,
+	require_team: bool,
+) {
+	let mut rng = Rng(11);
+	for (m, n, k) in team_shapes::<T>() {
+		let a = Mat::<T>::from_fn(m, k, |_, _| T::new(rng.next(), rng.next()));
+		let b = Mat::<T>::from_fn(k, n, |_, _| T::new(rng.next(), rng.next()));
+		let mut on_a_team = false;
+		for width in 1..=8 {
+			for stacked in [false, true] {
+				let (first, ran) = team_product(&a, &b, width, stacked);
+				let (again, _) = team_product(&a, &b, width, stacked);
+				on_a_team |= ran;
 				assert!(
-					ran > 0,
-					"{m}x{n}x{k} width {width}: the team path did not run"
+					first == again,
+					"{name} {m}x{n}x{k} width {width} stacked {stacked}: the result changed \
+					 between calls"
 				);
 			}
+		}
+		if require_team {
 			assert!(
-				team == seq,
-				"{m}x{n}x{k} width {width}: team result differs from Seq"
+				on_a_team,
+				"{name} {m}x{n}x{k}: the team path did not run at any width"
 			);
-			// the packing memory from the stack (`Gemm::gemm`) rather than from the kernels'
-			// thread-locals (`Gemm::gemm_alloc`, which `matmul` takes): the same result
-			let mut stacked = Mat::<f64>::zeros(m, n);
-			with_team(width, |par| {
-				let mut buf =
-					MemBuffer::new(matmul_scratch::<f64>(m, n, k, par.shape()));
-				matmul_with_scratch(
-					&mut stacked,
-					Accum::Replace,
-					&a,
-					Conj::No,
-					&b,
-					Conj::No,
-					1.5,
-					par,
-					MemStack::new(&mut buf),
-				);
-			});
-			assert!(
-				stacked == seq,
-				"{m}x{n}x{k} width {width}: stack result differs from Seq"
+		} else if !on_a_team {
+			println!(
+				"{name} {m}x{n}x{k}: stays on one thread at widths 2-8 on this host"
 			);
 		}
 	}
 }
 
-/// [`generic::gemm_generic`] on a team splits the output as the native product does, so its
-/// result is bitwise that of `Par::Seq` as well, and the parallel path did run.
+/// Across widths only the error bound is guaranteed (#53): `Par::Seq` and every team of 2 to 8,
+/// through either entry, are each within the reference bound of every element, so any two of
+/// them agree within twice that bound. Prints how many elements of a team result differ from
+/// `Par::Seq` and the largest difference relative to the bound, which an SME host reports (#53).
+#[cfg(all(feature = "threadteam", not(miri)))]
+fn team_result_is_within_the_bound_of_seq<T: TestScalar>(name: &str) {
+	let mut rng = Rng(17);
+	let alpha = T::new(1.5, -0.25);
+	for (m, n, k) in team_shapes::<T>() {
+		let a = Mat::<T>::from_fn(m, k, |_, _| T::new(rng.next(), rng.next()));
+		let b = Mat::<T>::from_fn(k, n, |_, _| T::new(rng.next(), rng.next()));
+		let want: Vec<(C, f64)> = (0..n)
+			.flat_map(|j| (0..m).map(move |i| (i, j)))
+			.map(|(i, j)| {
+				reference(
+					T::new(0.0, 0.0),
+					Accum::Replace,
+					|p| a[(i, p)],
+					Conj::No,
+					|p| b[(p, j)],
+					Conj::No,
+					alpha,
+					k,
+				)
+			})
+			.collect();
+		let (seq, _) = team_product(&a, &b, 1, false);
+		for width in 1..=8 {
+			for stacked in [false, true] {
+				let (got, _) = team_product(&a, &b, width, stacked);
+				let (mut differ, mut worst) = (0usize, 0.0f64);
+				for j in 0..n {
+					for i in 0..m {
+						let ((w, bound), g) =
+							(want[i + m * j], got[(i, j)].parts());
+						let err = abs((g.0 - w.0, g.1 - w.1));
+						assert!(
+							err <= bound,
+							"{name} {m}x{n}x{k} width {width} stacked {stacked} ({i}, {j}): \
+							 {err} > {bound}"
+						);
+						if got[(i, j)] != seq[(i, j)] {
+							let s = seq[(i, j)].parts();
+							differ += 1;
+							worst =
+								worst.max(abs((g.0 - s.0, g.1 - s.1)) / bound);
+						}
+					}
+				}
+				if differ > 0 {
+					println!(
+						"{name} {m}x{n}x{k} width {width} stacked {stacked}: {differ} of {} \
+						 elements differ from Par::Seq, at most {worst:.3} of the bound",
+						m * n
+					);
+				}
+			}
+		}
+	}
+}
+
+#[cfg(all(feature = "threadteam", not(miri)))]
+#[test]
+fn team_result_is_reproducible_per_width_f64() {
+	team_result_is_reproducible_per_width::<f64>("f64", true);
+}
+#[cfg(all(feature = "threadteam", not(miri)))]
+#[test]
+fn team_result_is_reproducible_per_width_f32() {
+	team_result_is_reproducible_per_width::<f32>("f32", false);
+}
+#[cfg(all(feature = "threadteam", not(miri)))]
+#[test]
+fn team_result_is_reproducible_per_width_c64() {
+	team_result_is_reproducible_per_width::<c64>("c64", false);
+}
+#[cfg(all(feature = "threadteam", not(miri)))]
+#[test]
+fn team_result_is_within_the_bound_of_seq_f64() {
+	team_result_is_within_the_bound_of_seq::<f64>("f64");
+}
+#[cfg(all(feature = "threadteam", not(miri)))]
+#[test]
+fn team_result_is_within_the_bound_of_seq_f32() {
+	team_result_is_within_the_bound_of_seq::<f32>("f32");
+}
+#[cfg(all(feature = "threadteam", not(miri)))]
+#[test]
+fn team_result_is_within_the_bound_of_seq_c64() {
+	team_result_is_within_the_bound_of_seq::<c64>("c64");
+}
+
+/// [`generic::gemm_generic`] on a team splits the output as the native product does, and its
+/// kernel does not depend on the tile's shape, so today its result is bitwise that of
+/// `Par::Seq`, and the parallel path did run. This is more than the contract promises (#53):
+/// a later kernel choice per tile in the generic path may replace it with the two tests above.
 #[cfg(all(feature = "threadteam", not(miri)))]
 #[test]
 fn generic_team_result_is_bitwise_seq() {

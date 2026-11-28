@@ -136,20 +136,19 @@ until recorded in meta.
   (meta §7a's layout puts `threadteam` under `colmat-core`). The team skeletons deal a
   `colmat-core` trait (`utils::thread::Producer`) rather than rayon's producer (debt K7), so the
   view types and the skeletons name no rayon item (#20).
-- **Rounding on a team (#28).** A product on a team splits its output and computes every element
-  as `Par::Seq` does, so the result is bitwise the same, with one exception. A column-major
+- **Rounding on a team (#28, #53).** Superseded by `docs/design/kernel-selection.md` §5.5 (in #52):
+  the guarantee is run-to-run reproducibility (the same binary, host class, call and team width
+  give the same bits), not equality between `Par::Seq` and a team. The rule recorded here first
+  was that a team result is bitwise `Par::Seq`. It broke in two places. First, a column-major
   matrix-vector product above the size of `depth_split` (a depth of at least 1024, and a matrix
   larger than 8 MiB or columns of at most 512 bytes, measured on an Apple M1 Pro) splits its
-  depth, as colmat-rs did: each participant sums its block of columns, and the partial sums are
-  added in order. That result rounds differently from `Par::Seq`, within the same error bound,
-  and is the same on every call of the same width, since the partition and the order of the
-  addition depend on the shape and the width only. The partial sums (`nrows x width`) come from
-  the caller's scratch: `matmul_scratch` asks for them when `par` is a team and the shape takes
-  the split. The packed native products call their kernel once per tile, so the bitwise equality
-  also needs the kernel to group the depth of every element the same way whatever the tile's
-  shape: `t4a-gemm` cut it by the output's shape until tensor4all/t4a-gemm#25, which made `f64`
-  `257 x 3 x 513` differ between `Par::Seq` and a team (#45). For `t4a-private-gemm-x86` this is
-  read from the code but not tested (tensor4all/t4a-private-gemm-x86#24).
+  depth, as colmat-rs did. Each participant sums its block of columns, and the partial sums are
+  added in order, so the result depends on the width. The partial sums (`nrows x width`) come
+  from the caller's scratch: `matmul_scratch` asks for them when `par` is a team and the shape
+  takes the split. Second, the packed native products call their kernel once per tile, and on
+  an SME host `t4a-gemm` may choose NEON for a tile where the whole product takes SME (#53).
+  The fix of #45 (tensor4all/t4a-gemm#25) is kept. Since then `t4a-gemm` blocks the depth the
+  same way whatever the tile's shape, which removes one source of variation between widths.
 - **Drivers.** Factorisations call primitives and shared leaves only. Panel leaves (pivot search
   plus rank-1/2 update), layout copies and the cost queries are public items of `colmat-core` or
   `colmat`, so an alternative driver or an algorithm outside the crate can reuse them. An
